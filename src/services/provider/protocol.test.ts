@@ -130,8 +130,8 @@ describe('parseSignPsbtParams', () => {
     expect(parseSignPsbtParams({ psbt: PSBT, broadcast: 1 }).ok).toBe(false);
   });
 
-  it('refuses to broadcast a listing, which is never a complete transaction', () => {
-    const result = parseSignPsbtParams({ psbt: PSBT, broadcast: true }, 'signAssetListing');
+  it('refuses to broadcast from completeAssetListing, which always broadcasts itself', () => {
+    const result = parseSignPsbtParams({ psbt: PSBT, broadcast: true }, 'completeAssetListing');
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.error.message).toMatch(/cannot broadcast/);
   });

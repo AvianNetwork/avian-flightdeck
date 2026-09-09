@@ -25,7 +25,8 @@ export const SUPPORTED_METHODS = [
   'getAccounts',
   'signMessage',
   'signPsbt',
-  'signAssetListing',
+  'createAssetListing',
+  'completeAssetListing',
   'getNetwork',
   'disconnect',
 ] as const;
@@ -43,6 +44,8 @@ export const LIMITS = {
   message: 8192,
   /** Base64 PSBT length. ~100 KB of base64 is ~75 KB of PSBT — far beyond any normal transaction. */
   psbt: 100_000,
+  /** Avian asset names top out well under this; anything longer is not a name. */
+  assetName: 64,
 } as const;
 
 export interface ConnectRequest {
@@ -83,7 +86,29 @@ export interface SignMessageResult {
 }
 
 /**
- * signAssetListing sells an asset: the wallet signs the seller's asset input with
+ * completeAssetListing buys an asset: the wallet decodes the seller's listing, funds it from this
+ * account, appends the asset destination and change, signs its own inputs and broadcasts.
+ *
+ * The price comes from the seller-signed bytes, never from the dApp, so a site cannot show a buyer
+ * one price and have them pay another.
+ */
+export interface CompleteAssetListingResult {
+  /** The completed PSBT, whether or not it was broadcast. */
+  psbt: string;
+  broadcast: boolean;
+  txid?: string;
+  broadcastError?: string;
+  assetName: string;
+  /** 10^8-scaled quantity, as a decimal string (JSON has no bigint). */
+  assetAmount: string;
+  /** What the buyer paid the seller, in satoshis. */
+  pricePaidSats: number;
+  /** Network fee the buyer paid, in satoshis. */
+  feeSats: number;
+}
+
+/**
+ * createAssetListing sells an asset: the wallet signs the seller's asset input with
  * SIGHASH_SINGLE|FORKID|ANYONECANPAY, committing to that input and the payment output alone. A
  * buyer can then add payment inputs, an asset destination and change without invalidating it.
  *
@@ -91,9 +116,11 @@ export interface SignMessageResult {
  * signPsbt instead would let any connected site slip an asset input into an ordinary signing
  * request, where a SIGHASH_ALL signature carries none of the guarantees this shape does.
  */
-export interface SignAssetListingResult {
+export interface CreateAssetListingResult {
   /** The base64 PSBT with the seller's input signed and finalised. */
   psbt: string;
+  /** The asset output the listing spends, so a dApp can detect a cancelled or spent listing. */
+  assetUtxo: { txid: string; vout: number };
   /** Asset the listing sells, e.g. `RLM#BRBAEY6A94VXQ`. */
   assetName: string;
   /** Asset quantity, 10^8-scaled, as a decimal string (JSON has no bigint). */

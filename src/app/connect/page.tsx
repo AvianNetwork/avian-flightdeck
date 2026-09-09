@@ -16,6 +16,7 @@ import ConnectApprovalDialog, {
 import SignMessageApprovalDialog from '@/components/connect/SignMessageApprovalDialog';
 import SignPsbtApprovalDialog from '@/components/connect/SignPsbtApprovalDialog';
 import SignAssetListingApprovalDialog from '@/components/connect/SignAssetListingApprovalDialog';
+import BuyAssetApprovalDialog from '@/components/connect/BuyAssetApprovalDialog';
 import type { PsbtSummary } from '@/services/wallet/psbt';
 
 import { useWallet } from '@/contexts/WalletContext';
@@ -56,6 +57,13 @@ interface PsbtPrompt {
 interface ListingPrompt {
   origin: string;
   account: string;
+  assetName: string;
+  priceSats: number;
+}
+
+interface BuyPrompt {
+  origin: string;
+  account: string;
   listing: AssetListingPreview;
 }
 
@@ -79,6 +87,7 @@ function ConnectClient() {
   const [signPrompt, setSignPrompt] = useState<SignPrompt | null>(null);
   const [psbtPrompt, setPsbtPrompt] = useState<PsbtPrompt | null>(null);
   const [listingPrompt, setListingPrompt] = useState<ListingPrompt | null>(null);
+  const [buyPrompt, setBuyPrompt] = useState<BuyPrompt | null>(null);
   const [completed, setCompleted] = useState<{ origin: string; method: string } | null>(null);
 
   // Live values the (stable) provider host closures read from.
@@ -93,6 +102,7 @@ function ConnectClient() {
   const signResolverRef = useRef<((approved: boolean) => void) | null>(null);
   const psbtResolverRef = useRef<((approved: boolean) => void) | null>(null);
   const listingResolverRef = useRef<((approved: boolean) => void) | null>(null);
+  const buyResolverRef = useRef<((approved: boolean) => void) | null>(null);
   const providerRef = useRef<ProviderService | null>(null);
   const pendingIdsRef = useRef<Set<string>>(new Set());
   const answeredRef = useRef<Map<string, ConnectResponse>>(new Map());
@@ -173,28 +183,43 @@ function ConnectClient() {
   }, []);
 
   const requestSignAssetListingApproval = useCallback(
-    async (origin: string, psbt: string, account: string) => {
-      // Describe the sale before showing it: a listing that will not verify is refused without
-      // troubling the user.
-      let listing: AssetListingPreview;
-      try {
-        listing = await walletService.previewAssetListing(psbt, account);
-      } catch (error) {
-        providerLogger.warn('Rejected an unusable asset listing from a site:', error);
-        return false;
-      }
-      return new Promise<boolean>((resolve) => {
+    (origin: string, assetName: string, priceSats: number, account: string) =>
+      new Promise<boolean>((resolve) => {
         listingResolverRef.current = resolve;
-        setListingPrompt({ origin, account, listing });
-      });
-    },
-    [walletService],
+        setListingPrompt({ origin, account, assetName, priceSats });
+      }),
+    [],
   );
 
   const resolveListingPrompt = useCallback((approved: boolean) => {
     setListingPrompt(null);
     const resolver = listingResolverRef.current;
     listingResolverRef.current = null;
+    resolver?.(approved);
+  }, []);
+
+  const requestBuyAssetApproval = useCallback(
+    async (origin: string, listingPsbt: string, account: string) => {
+      // Decode the seller's own bytes: the price shown is the one they signed, not a site's claim.
+      let listing: AssetListingPreview;
+      try {
+        listing = await walletService.previewSellerListing(listingPsbt);
+      } catch (error) {
+        providerLogger.warn('Rejected an unusable listing from a site:', error);
+        return false;
+      }
+      return new Promise<boolean>((resolve) => {
+        buyResolverRef.current = resolve;
+        setBuyPrompt({ origin, account, listing });
+      });
+    },
+    [walletService],
+  );
+
+  const resolveBuyPrompt = useCallback((approved: boolean) => {
+    setBuyPrompt(null);
+    const resolver = buyResolverRef.current;
+    buyResolverRef.current = null;
     resolver?.(approved);
   }, []);
 
@@ -304,28 +329,57 @@ function ConnectClient() {
 
       requestSignAssetListingApproval,
 
-      signAssetListing: async (account: string, psbt: string) => {
-        const wallet = await StorageService.getWalletByAddress(account);
-        if (!wallet?.privateKey) {
-          providerLogger.warn('No private key available for the requested account');
-          return null;
-        }
-
+      createAssetListing: async (
+        account: string,
+        listing: { assetName: string; priceSats: number; amount?: string },
+      ) => {
         const auth = await requireAuthRef.current(
-          `Authenticate to sell an asset via ${pinnedOriginRef.current || 'this site'}`,
+          `Authenticate to list ${listing.assetName} via ${pinnedOriginRef.current || 'this site'}`,
         );
         if (!auth.success) return null;
 
-        const signed = await walletService.signAssetListing(psbt, auth.password, account);
+        const signed = await walletService.createAssetListing({
+          assetName: listing.assetName,
+          priceSats: listing.priceSats,
+          amount: listing.amount === undefined ? undefined : BigInt(listing.amount),
+          password: auth.password,
+          account,
+        });
         return {
           psbt: signed.psbt,
           assetName: signed.assetName,
-          // JSON has no bigint, so the quantity crosses the boundary as a decimal string.
+          // JSON has no bigint, so quantities cross the boundary as decimal strings.
           assetAmount: signed.assetAmount.toString(),
           priceSats: signed.priceSats,
           payTo: signed.payTo,
+          assetUtxo: signed.assetUtxo,
         };
       },
+
+      completeAssetListing: async (account: string, listingPsbt: string) => {
+        const auth = await requireAuthRef.current(
+          `Authenticate to buy from ${pinnedOriginRef.current || 'this site'}`,
+        );
+        if (!auth.success) return null;
+
+        const bought = await walletService.completeAssetListing({
+          listingPsbt,
+          password: auth.password,
+          account,
+        });
+        return {
+          psbt: bought.psbt,
+          broadcast: bought.broadcast,
+          txid: bought.txid,
+          broadcastError: bought.broadcastError,
+          assetName: bought.assetName,
+          assetAmount: bought.assetAmount.toString(),
+          pricePaidSats: bought.pricePaidSats,
+          feeSats: bought.feeSats,
+        };
+      },
+
+      requestBuyAssetApproval,
 
       getPublicKey: async (account: string) => {
         const publicKey = await StorageService.getKnownPublicKey(account);
@@ -689,8 +743,17 @@ function ConnectClient() {
         open={listingPrompt !== null}
         origin={listingPrompt?.origin || ''}
         account={listingPrompt?.account || ''}
-        listing={listingPrompt?.listing || null}
+        assetName={listingPrompt?.assetName || ''}
+        priceSats={listingPrompt?.priceSats ?? 0}
         onDecision={resolveListingPrompt}
+      />
+
+      <BuyAssetApprovalDialog
+        open={buyPrompt !== null}
+        origin={buyPrompt?.origin || ''}
+        account={buyPrompt?.account || ''}
+        listing={buyPrompt?.listing || null}
+        onDecision={resolveBuyPrompt}
       />
     </GradientBackground>
   );

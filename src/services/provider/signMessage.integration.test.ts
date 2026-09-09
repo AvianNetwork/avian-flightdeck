@@ -54,7 +54,9 @@ describe('signMessage over Avian Connect', () => {
       getPublicKey: async () => undefined,
       getNetwork: async () => ({ network: 'mainnet', genesisHash: null }),
       requestSignAssetListingApproval: async () => true,
-    signAssetListing: async () => null,
+    createAssetListing: async () => null,
+    requestBuyAssetApproval: async () => true,
+    completeAssetListing: async () => null,
     emit: () => undefined,
     };
 
