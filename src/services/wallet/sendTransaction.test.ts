@@ -701,6 +701,63 @@ describe('buildUnsignedPsbt', () => {
     expect(signed.complete).toBe(false);
   });
 
+  it('broadcasts when asked and reports the txid', async () => {
+    const { address } = await createActiveWallet();
+    const { electrum, broadcast } = createFakeElectrum(address, [500_000]);
+    const wallet = new WalletService(electrum as never);
+    const { psbt } = await wallet.buildUnsignedPsbt(RECIPIENT, 100_000, { feeRate: RATE });
+
+    const result = await wallet.signAndBroadcastPsbt(psbt, TEST_PASSWORD, address);
+
+    expect(result.broadcast).toBe(true);
+    expect(result.txid).toBe(broadcastTx(broadcast).getId());
+    // The user sees the spend in their own history rather than an unchanged wallet.
+    const history = await StorageService.getTransactionHistory(address);
+    expect(history.map((entry) => entry.txid)).toContain(result.txid);
+  });
+
+  it('keeps the signature when the broadcast fails, so it can be retried', async () => {
+    // A marketplace race lands here: another buyer took the listing, so the inputs are gone.
+    const { address } = await createActiveWallet();
+    const { electrum, broadcast } = createFakeElectrum(address, [500_000]);
+    broadcast.mockRejectedValueOnce(new Error('missing-inputs'));
+    const wallet = new WalletService(electrum as never);
+    const { psbt } = await wallet.buildUnsignedPsbt(RECIPIENT, 100_000, { feeRate: RATE });
+
+    const result = await wallet.signAndBroadcastPsbt(psbt, TEST_PASSWORD, address);
+
+    expect(result.broadcast).toBe(false);
+    expect(result.broadcastError).toMatch(/missing-inputs/);
+    expect(result.txid).toBeUndefined();
+    // The signature is not lost — the caller can broadcast it themselves.
+    expect(result.complete).toBe(true);
+    expect(wallet.finalizePsbt(result.psbt).hex.length).toBeGreaterThan(0);
+    expect(await StorageService.getTransactionHistory(address)).toEqual([]);
+  });
+
+  it('does not broadcast a transaction somebody else still has to sign', async () => {
+    const connected = await createActiveWallet();
+    const { electrum, broadcast } = createFakeElectrum(connected.address, [500_000]);
+    const wallet = new WalletService(electrum as never);
+    const { psbt } = await wallet.buildUnsignedPsbt(RECIPIENT, 100_000, { feeRate: RATE });
+
+    // Sign as a wallet that owns none of the inputs: nothing gets signed, so nothing completes.
+    const otherKey = ECPair.makeRandom({ network: avianNetwork });
+    const otherAddress = deriveAddress(Buffer.from(otherKey.publicKey), 'p2pkh');
+    await StorageService.createWallet({
+      name: 'Not the owner',
+      address: otherAddress,
+      privateKey: await secureEncrypt(otherKey.toWIF(), TEST_PASSWORD),
+      isEncrypted: true,
+    });
+
+    const result = await wallet.signAndBroadcastPsbt(psbt, TEST_PASSWORD, otherAddress);
+
+    expect(result.broadcast).toBe(false);
+    expect(result.broadcastError).toMatch(/needs other signatures/);
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
   it('refuses to export for a wrapped-SegWit wallet (needs the pubkey for a redeemScript)', async () => {
     // Register a p2sh-p2wpkh active wallet directly so the export guard trips.
     const keyPair = ECPair.makeRandom({ network: avianNetwork });

@@ -113,7 +113,7 @@ export function parseSignMessageParams(
 export function parseSignPsbtParams(
   params: Record<string, unknown> | undefined,
   method: 'signPsbt' | 'signAssetListing' = 'signPsbt',
-): { ok: true; psbt: string } | { ok: false; error: ConnectError } {
+): { ok: true; psbt: string; broadcast: boolean } | { ok: false; error: ConnectError } {
   const psbt = params?.psbt;
   if (typeof psbt !== 'string' || psbt.length === 0) {
     return {
@@ -138,7 +138,23 @@ export function parseSignPsbtParams(
       error: { code: 'INVALID_REQUEST', message: `${method} psbt must be valid base64` },
     };
   }
-  return { ok: true, psbt };
+  // Broadcasting is opt-in and only meaningful for signPsbt: a listing is deliberately incomplete,
+  // so there is never anything to broadcast.
+  const broadcast = params?.broadcast;
+  if (broadcast !== undefined && typeof broadcast !== 'boolean') {
+    return {
+      ok: false,
+      error: { code: 'INVALID_REQUEST', message: `${method} broadcast must be a boolean` },
+    };
+  }
+  if (broadcast === true && method !== 'signPsbt') {
+    return {
+      ok: false,
+      error: { code: 'INVALID_REQUEST', message: `${method} cannot broadcast` },
+    };
+  }
+
+  return { ok: true, psbt, broadcast: broadcast === true };
 }
 
 export function makeResult(id: string, result: unknown): ConnectResponse {

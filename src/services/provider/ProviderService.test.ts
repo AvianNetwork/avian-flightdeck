@@ -39,7 +39,12 @@ const PUBLIC_KEY = '02'.padEnd(66, 'a');
 const SIGNATURE = 'H9base64signature==';
 // Base64-charset placeholder; the host is mocked so the bytes never get decoded.
 const PSBT = 'cHNidP8BAAoAAAAAAAAAAAAA';
-const SIGNED_PSBT: SignPsbtResult = { psbt: PSBT, complete: true, signedInputs: 1 };
+const SIGNED_PSBT: SignPsbtResult = {
+  psbt: PSBT,
+  complete: true,
+  signedInputs: 1,
+  broadcast: false,
+};
 const SIGNED_LISTING: SignAssetListingResult = {
   psbt: PSBT,
   assetName: 'RLM#BRBAEY6A94VXQ',
@@ -428,7 +433,7 @@ describe('signPsbt', () => {
 
     const response = await provider.handle(request('signPsbt', { psbt: PSBT }));
 
-    expect(host.requestSignPsbtApproval).toHaveBeenCalledWith(ORIGIN, PSBT, ADDRESS);
+    expect(host.requestSignPsbtApproval).toHaveBeenCalledWith(ORIGIN, PSBT, ADDRESS, false);
     expect(response.result).toEqual(SIGNED_PSBT);
   });
 
@@ -467,26 +472,49 @@ describe('signPsbt', () => {
     expect(host.requestSignPsbtApproval).not.toHaveBeenCalled();
   });
 
-  it('returns exactly the signed PSBT, complete flag and count — nothing else', async () => {
+  it('returns the signed PSBT and what happened to it — nothing else', async () => {
     const provider = await connectFirst(createHost());
     const response = await provider.handle(request('signPsbt', { psbt: PSBT }));
 
     expect(Object.keys(response.result as object).sort()).toEqual([
+      'broadcast',
       'complete',
       'psbt',
       'signedInputs',
     ]);
   });
 
-  it('never broadcasts — the wallet only hands back a signed PSBT', async () => {
+  it('does not broadcast unless the site asks', async () => {
     const host = createHost();
     const provider = await connectFirst(host);
 
-    await provider.handle(request('signPsbt', { psbt: PSBT }));
+    const response = await provider.handle(request('signPsbt', { psbt: PSBT }));
 
-    // The host exposes no broadcast path to the engine; signing is all it can do.
-    expect(host.signPsbt).toHaveBeenCalledWith(ADDRESS, PSBT);
-    expect(host).not.toHaveProperty('broadcast');
+    expect(host.signPsbt).toHaveBeenCalledWith(ADDRESS, PSBT, false);
+    expect((response.result as SignPsbtResult).broadcast).toBe(false);
+  });
+
+  it('broadcasts when the site asks, and says so on the approval screen', async () => {
+    const broadcastResult: SignPsbtResult = { ...SIGNED_PSBT, broadcast: true, txid: 'abc123' };
+    const host = createHost({ signPsbt: vi.fn(async () => broadcastResult as SignPsbtResult | null) });
+    const provider = await connectFirst(host);
+
+    const response = await provider.handle(request('signPsbt', { psbt: PSBT, broadcast: true }));
+
+    // The user is told this will be sent, not merely signed.
+    expect(host.requestSignPsbtApproval).toHaveBeenCalledWith(ORIGIN, PSBT, ADDRESS, true);
+    expect(host.signPsbt).toHaveBeenCalledWith(ADDRESS, PSBT, true);
+    expect(response.result).toEqual(broadcastResult);
+  });
+
+  it('rejects a non-boolean broadcast flag without prompting', async () => {
+    const host = createHost();
+    const provider = await connectFirst(host);
+
+    const response = await provider.handle(request('signPsbt', { psbt: PSBT, broadcast: 'yes' }));
+
+    expect(response.error?.code).toBe('INVALID_REQUEST');
+    expect(host.requestSignPsbtApproval).not.toHaveBeenCalled();
   });
 });
 
