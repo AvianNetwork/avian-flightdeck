@@ -138,8 +138,9 @@ export function parseSignPsbtParams(
       error: { code: 'INVALID_REQUEST', message: `${method} psbt must be valid base64` },
     };
   }
-  // Broadcasting is opt-in and only meaningful for signPsbt: a listing is deliberately incomplete,
-  // so there is never anything to broadcast.
+  // Defaults differ by method. signPsbt signs unless asked to send; completing a purchase sends
+  // unless asked not to, since an unsent swap only widens the race to lose it. Either can be set
+  // explicitly — passing false is how a caller gets the finished transaction to inspect first.
   const broadcast = params?.broadcast;
   if (broadcast !== undefined && typeof broadcast !== 'boolean') {
     return {
@@ -147,14 +148,12 @@ export function parseSignPsbtParams(
       error: { code: 'INVALID_REQUEST', message: `${method} broadcast must be a boolean` },
     };
   }
-  if (broadcast === true && method !== 'signPsbt') {
-    return {
-      ok: false,
-      error: { code: 'INVALID_REQUEST', message: `${method} cannot broadcast` },
-    };
-  }
 
-  return { ok: true, psbt, broadcast: broadcast === true };
+  return {
+    ok: true,
+    psbt,
+    broadcast: broadcast ?? method === 'completeAssetListing',
+  };
 }
 
 export function makeResult(id: string, result: unknown): ConnectResponse {

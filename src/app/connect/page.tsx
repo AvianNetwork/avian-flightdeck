@@ -445,7 +445,7 @@ function ConnectClient() {
         };
       },
 
-      completeAssetListing: async (account: string, listingPsbt: string) => {
+      completeAssetListing: async (account: string, listingPsbt: string, broadcast: boolean) => {
         const auth = await requireAuthRef.current(
           `Authenticate to buy from ${pinnedOriginRef.current || 'this site'}`,
         );
@@ -455,6 +455,7 @@ function ConnectClient() {
           listingPsbt,
           password: auth.password,
           account,
+          broadcast,
         });
         return {
           psbt: bought.psbt,
