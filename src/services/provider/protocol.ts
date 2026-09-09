@@ -112,7 +112,7 @@ export function parseSignMessageParams(
 /** Extracts and bounds-checks the `psbt` param of signPsbt (a base64 string). */
 export function parseSignPsbtParams(
   params: Record<string, unknown> | undefined,
-  method: 'signPsbt' | 'signAssetListing' = 'signPsbt',
+  method: 'signPsbt' | 'completeAssetListing' = 'signPsbt',
 ): { ok: true; psbt: string; broadcast: boolean } | { ok: false; error: ConnectError } {
   const psbt = params?.psbt;
   if (typeof psbt !== 'string' || psbt.length === 0) {
@@ -353,4 +353,36 @@ export function readResponseFromFragment(hash: string): ConnectResponse | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * `createAssetListing` takes what to sell and for how much — never a PSBT. The wallet owns the
+ * UTXOs, so it builds the transaction; a dApp that can only name an asset and a price has almost
+ * no surface to attack with.
+ */
+export function parseCreateListingParams(
+  params: Record<string, unknown> | undefined,
+): { ok: true; assetName: string; priceSats: number; amount?: string } | { ok: false; error: ConnectError } {
+  const bad = (message: string) => ({ ok: false as const, error: { code: 'INVALID_REQUEST' as const, message } });
+
+  const assetName = params?.assetName;
+  if (typeof assetName !== 'string' || !assetName || assetName.length > LIMITS.assetName) {
+    return bad(`createAssetListing requires an assetName of at most ${LIMITS.assetName} characters`);
+  }
+
+  const priceSats = params?.priceSats;
+  if (typeof priceSats !== 'number' || !Number.isInteger(priceSats) || priceSats <= 0) {
+    return bad('createAssetListing requires priceSats as a positive whole number of satoshis');
+  }
+  if (!Number.isSafeInteger(priceSats)) {
+    return bad('createAssetListing priceSats is out of range');
+  }
+
+  // Quantities are 10^8-scaled and cross the wire as decimal strings, since JSON has no bigint.
+  const amount = params?.amount;
+  if (amount !== undefined && (typeof amount !== 'string' || !/^[0-9]{1,20}$/.test(amount))) {
+    return bad('createAssetListing amount must be a decimal string of the 10^8-scaled quantity');
+  }
+
+  return { ok: true, assetName, priceSats, amount: amount as string | undefined };
 }

@@ -720,6 +720,229 @@ export class WalletService {
     }
 
     /**
+     * Build and sign a marketplace listing for `assetName` at `priceSats`.
+     *
+     * The wallet builds the transaction rather than accepting one, because it is the side that
+     * knows which UTXO holds the asset. A dApp asking for `{ assetName, priceSats }` also hands
+     * over almost no attack surface, where a site-supplied PSBT is arbitrary structure the wallet
+     * must reason about.
+     *
+     * **The listed UTXO must hold exactly the amount being sold.** `SIGHASH_SINGLE|ANYONECANPAY`
+     * commits to `input[0]` and `output[0]` only, so an asset-change output returning the
+     * remainder to the seller would be uncommitted — a buyer could drop it, take the whole UTXO and
+     * still pay only the listed price. Selling part of a larger holding therefore needs the UTXO
+     * split first, in its own transaction; this refuses rather than building something unsafe.
+     */
+    async createAssetListing(params: {
+        assetName: string;
+        priceSats: number;
+        /** 10^8-scaled quantity. Omit for a unique, or any asset held as a single UTXO. */
+        amount?: bigint;
+        password?: string;
+        account?: string;
+    }): Promise<AssetListingPreview & { psbt: string; assetUtxo: { txid: string; vout: number } }> {
+        const { assetName, priceSats } = params;
+        if (!Number.isInteger(priceSats) || priceSats <= 0) {
+            throw new Error('The listing price must be a positive whole number of satoshis');
+        }
+
+        const address = params.account ?? (await StorageService.getActiveWallet())?.address;
+        if (!address) throw new Error('No account to list this asset from');
+
+        const utxos = await this.electrum.getAssetUTXOs(address, assetName);
+        if (utxos.length === 0) {
+            throw new Error(`This account holds no ${assetName}`);
+        }
+
+        // Exactly one UTXO for the amount being sold — see the note above on uncommitted change.
+        let chosen;
+        if (params.amount === undefined) {
+            if (utxos.length > 1) {
+                throw new Error(
+                    `${assetName} is held across ${utxos.length} outputs — say which amount to list`,
+                );
+            }
+            chosen = utxos[0];
+        } else {
+            chosen = utxos.find((utxo) => BigInt(Math.trunc(utxo.value)) === params.amount);
+            if (!chosen) {
+                throw new Error(
+                    `No single ${assetName} output holds exactly that amount. Selling part of a ` +
+                    'larger holding needs the output split first, because the change returned to ' +
+                    'you would not be covered by your signature.',
+                );
+            }
+        }
+
+        const prevTxHex = await this.electrum.getTransaction(chosen.txid, false);
+        if (!prevTxHex) {
+            throw new Error('Could not load the transaction holding this asset');
+        }
+
+        const psbt = new bitcoin.Psbt({ network: avianNetwork });
+        psbt.addInput({
+            hash: chosen.txid,
+            index: chosen.vout,
+            // Core's wallet default: RBF disabled, locktime compliant. The seller's signature
+            // commits to this value, so a buyer must preserve it.
+            sequence: 0xfffffffe,
+            nonWitnessUtxo: Buffer.from(prevTxHex, 'hex'),
+        });
+        psbt.addOutput({ address, value: priceSats });
+
+        const signed = await this.signAssetListing(psbt.toBase64(), params.password, params.account);
+        // The asset we signed is read back out of the output script, not taken from the request or
+        // the server's filtering: listing the wrong asset would sell the wrong item at this price.
+        if (signed.assetName !== assetName) {
+            throw new Error(
+                `Refusing to list ${signed.assetName} for a request to sell ${assetName}`,
+            );
+        }
+        return { ...signed, assetUtxo: { txid: chosen.txid, vout: chosen.vout } };
+    }
+
+    /**
+     * Complete a seller's listing: pay the asking price, take the asset, broadcast the swap.
+     *
+     * The buyer's wallet builds this half too — it owns the coins and knows which are spendable.
+     * The listing is decoded here rather than trusted, so the price shown at approval is the one
+     * the seller actually signed, not one a site claims.
+     *
+     * The seller signed `input[0]` against `output[0]` with SINGLE|ANYONECANPAY, so both keep their
+     * positions and everything the buyer adds is appended: payment inputs, the asset to the buyer,
+     * and change. Nothing the buyer adds can invalidate the seller's signature, and nothing the
+     * seller signed can be moved.
+     */
+    async completeAssetListing(params: {
+        listingPsbt: string;
+        password?: string;
+        account?: string;
+        /** Broadcast once signed. On by default: an unsent swap only widens the race to lose it. */
+        broadcast?: boolean;
+        feeRate?: number;
+    }): Promise<{
+        psbt: string;
+        txid?: string;
+        broadcast: boolean;
+        broadcastError?: string;
+        assetName: string;
+        assetAmount: bigint;
+        pricePaidSats: number;
+        feeSats: number;
+    }> {
+        const psbt = bitcoin.Psbt.fromBase64(params.listingPsbt, { network: avianNetwork });
+        const listing = this.inspectSellerListing(psbt);
+
+        const address = params.account ?? (await StorageService.getActiveWallet())?.address;
+        if (!address) throw new Error('No account to buy with');
+        if (listing.payTo === address) {
+            throw new Error('This is your own listing — cancel it instead of buying it');
+        }
+
+        const satPerVByte = await this.resolveFeeRate(params.feeRate);
+        const avnUTXOs = await this.electrum.getUTXOs(address);
+        const sorted = [...avnUTXOs].sort((a, b) => b.value - a.value);
+
+        // Outputs: the seller's payment (already there), the asset to us, and our change.
+        // Inputs: the seller's asset input, plus however many of ours the price and fee need.
+        const selected: typeof sorted = [];
+        let funded = 0;
+        let fee = 0;
+        for (const utxo of sorted) {
+            selected.push(utxo);
+            funded += utxo.value;
+            fee = estimateTxFee(selected.length + 1, 3, satPerVByte);
+            if (funded >= listing.priceSats + fee) break;
+        }
+        if (funded < listing.priceSats + fee) {
+            throw new Error(
+                `Not enough AVN: need ${(listing.priceSats + fee) / 1e8}, have ${funded / 1e8}`,
+            );
+        }
+
+        for (const utxo of selected) {
+            const prevTxHex = await this.electrum.getTransaction(utxo.txid, false);
+            if (!prevTxHex) throw new Error('Could not load one of your transactions');
+            psbt.addInput({
+                hash: utxo.txid,
+                index: utxo.vout,
+                sequence: 0xfffffffe,
+                nonWitnessUtxo: Buffer.from(prevTxHex, 'hex'),
+            });
+        }
+
+        // The asset moves to us in full: the seller could only list a UTXO whose amount is exactly
+        // what is being sold, so there is no asset change to account for.
+        psbt.addOutput({
+            script: buildAssetTransferScript(address, listing.assetName, listing.assetAmount),
+            value: 0,
+        });
+
+        const change = funded - listing.priceSats - fee;
+        if (change > DUST_THRESHOLD_SATS) {
+            psbt.addOutput({ address, value: change });
+        }
+
+        const assembled = psbt.toBase64();
+        const result = params.broadcast === false
+            ? { ...(await this.signPsbt(assembled, params.password, address)), broadcast: false }
+            : await this.signAndBroadcastPsbt(assembled, params.password, address);
+
+        return {
+            ...result,
+            assetName: listing.assetName,
+            assetAmount: listing.assetAmount,
+            pricePaidSats: listing.priceSats,
+            feeSats: fee,
+        };
+    }
+
+    /**
+     * Describe a seller's listing without touching keys, for the buyer's approval screen.
+     * Throws with the reason when the PSBT is not a usable listing.
+     */
+    previewSellerListing(listingPsbt: string): AssetListingPreview {
+        return this.inspectSellerListing(
+            bitcoin.Psbt.fromBase64(listingPsbt, { network: avianNetwork }),
+        );
+    }
+
+    /**
+     * Read a seller-signed listing, refusing anything that is not one.
+     *
+     * A buyer must not take a site's word for what a listing costs or contains: everything shown at
+     * approval comes from these bytes, which carry the seller's signature.
+     */
+    private inspectSellerListing(psbt: bitcoin.Psbt): AssetListingPreview {
+        if (psbt.inputCount !== 1 || psbt.txOutputs.length !== 1) {
+            throw new Error('This is not a listing: it must have exactly one input and one output');
+        }
+        if (!psbt.data.inputs[0].finalScriptSig) {
+            throw new Error('This listing is not signed by the seller');
+        }
+
+        const prev = this.psbtPrevOut(psbt, 0);
+        if (!prev || !isAssetScript(prev.script)) {
+            throw new Error('This listing does not sell an asset');
+        }
+        const asset = parseAssetScript(prev.script);
+        if (!asset || asset.amount === null) {
+            throw new Error('This listing carries an unreadable asset script');
+        }
+
+        const payTo = this.scriptToAddress(psbt.txOutputs[0].script);
+        if (!payTo) throw new Error('This listing has no payable seller address');
+        if (psbt.txOutputs[0].value <= 0) throw new Error('This listing has no price');
+
+        return {
+            assetName: asset.name,
+            assetAmount: asset.amount,
+            priceSats: psbt.txOutputs[0].value,
+            payTo,
+        };
+    }
+
+    /**
      * Validate that `psbtBase64` is a listing `account` can safely sell, and describe it.
      *
      * Throws with the reason when it is not. No key access, so the approval screen can call it

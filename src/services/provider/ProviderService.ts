@@ -17,7 +17,8 @@ import {
   OriginPermission,
   SignMessageResult,
   SignPsbtResult,
-  SignAssetListingResult,
+  CreateAssetListingResult,
+  CompleteAssetListingResult,
 } from '@/types/avianConnect';
 import { providerLogger } from '@/lib/Logger';
 import { PermissionService } from './PermissionService';
@@ -26,6 +27,7 @@ import {
   makeResult,
   parseRequest,
   parseSignMessageParams,
+  parseCreateListingParams,
   parseSignPsbtParams,
 } from './protocol';
 
@@ -78,13 +80,27 @@ export interface ProviderHost {
    * Shows what the listing sells and for how much, and resolves false when the user declines.
    * Separate from the PSBT screen because the decision is a sale, not a transfer.
    */
-  requestSignAssetListingApproval(origin: string, psbt: string, account: string): Promise<boolean>;
+  requestSignAssetListingApproval(
+    origin: string,
+    assetName: string,
+    priceSats: number,
+    account: string,
+  ): Promise<boolean>;
+  /** Shows what the buyer pays and receives, decoded from the seller-signed listing. */
+  requestBuyAssetApproval(origin: string, listingPsbt: string, account: string): Promise<boolean>;
   /**
    * Authenticates the user and signs the seller's asset input with SINGLE|FORKID|ANYONECANPAY.
    * Resolves null when the user cancels authentication, and throws when the PSBT is not a listing
    * this account can safely sign.
    */
-  signAssetListing(account: string, psbt: string): Promise<SignAssetListingResult | null>;
+  createAssetListing(
+    account: string,
+    request: { assetName: string; priceSats: number; amount?: string },
+  ): Promise<CreateAssetListingResult | null>;
+  completeAssetListing(
+    account: string,
+    listingPsbt: string,
+  ): Promise<CompleteAssetListingResult | null>;
   getPublicKey(account: string): Promise<string | undefined>;
   getNetwork(): Promise<NetworkResult>;
   emit(event: ConnectEventName, data: unknown): void;
@@ -125,8 +141,10 @@ export class ProviderService {
           return await this.getAccounts(id);
         case 'signMessage':
           return await this.signMessage(id, params);
-        case 'signAssetListing':
-          return await this.signAssetListing(id, params);
+        case 'createAssetListing':
+          return await this.createAssetListing(id, params);
+        case 'completeAssetListing':
+          return await this.completeAssetListing(id, params);
         case 'signPsbt':
           return await this.signPsbt(id, params);
         case 'getNetwork':
@@ -275,7 +293,7 @@ export class ProviderService {
     return makeResult(id, result);
   }
 
-  private async signAssetListing(
+  private async createAssetListing(
     id: string,
     params: Record<string, unknown> | undefined,
   ): Promise<ConnectResponse> {
@@ -288,9 +306,9 @@ export class ProviderService {
       return makeError(id, 'ORIGIN_NOT_APPROVED', 'This site has not been granted account access');
     }
 
-    const parsedParams = parseSignPsbtParams(params, 'signAssetListing');
-    if (!parsedParams.ok) {
-      return { avianConnect: 1, id, error: parsedParams.error };
+    const parsed = parseCreateListingParams(params);
+    if (!parsed.ok) {
+      return { avianConnect: 1, id, error: parsed.error };
     }
 
     const account = accounts[0];
@@ -298,20 +316,62 @@ export class ProviderService {
     // Selling is approved every time: remembering a site never covers parting with an asset.
     const approved = await this.host.requestSignAssetListingApproval(
       this.origin,
-      parsedParams.psbt,
+      parsed.assetName,
+      parsed.priceSats,
       account,
     );
     if (!approved) {
       return makeError(id, 'USER_REJECTED', 'User rejected the listing');
     }
 
-    const signed = await this.host.signAssetListing(account, parsedParams.psbt);
-    if (!signed) {
+    const listing = await this.host.createAssetListing(account, {
+      assetName: parsed.assetName,
+      priceSats: parsed.priceSats,
+      amount: parsed.amount,
+    });
+    if (!listing) {
       return makeError(id, 'USER_REJECTED', 'Authentication was cancelled');
     }
 
     await PermissionService.touch(this.origin);
-    const result: SignAssetListingResult = signed;
+    const result: CreateAssetListingResult = listing;
+    return makeResult(id, result);
+  }
+
+  private async completeAssetListing(
+    id: string,
+    params: Record<string, unknown> | undefined,
+  ): Promise<ConnectResponse> {
+    if (this.host.isLocked()) {
+      return makeError(id, 'WALLET_LOCKED', 'The wallet is locked');
+    }
+
+    const accounts = await this.resolveAccounts();
+    if (accounts.length === 0) {
+      return makeError(id, 'ORIGIN_NOT_APPROVED', 'This site has not been granted account access');
+    }
+
+    const parsed = parseSignPsbtParams(params, 'completeAssetListing');
+    if (!parsed.ok) {
+      return { avianConnect: 1, id, error: parsed.error };
+    }
+
+    const account = accounts[0];
+
+    // The approval screen decodes the listing itself, so the price shown is the seller's, not the
+    // site's claim about it.
+    const approved = await this.host.requestBuyAssetApproval(this.origin, parsed.psbt, account);
+    if (!approved) {
+      return makeError(id, 'USER_REJECTED', 'User rejected the purchase');
+    }
+
+    const bought = await this.host.completeAssetListing(account, parsed.psbt);
+    if (!bought) {
+      return makeError(id, 'USER_REJECTED', 'Authentication was cancelled');
+    }
+
+    await PermissionService.touch(this.origin);
+    const result: CompleteAssetListingResult = bought;
     return makeResult(id, result);
   }
 

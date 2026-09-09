@@ -199,57 +199,74 @@ that does not parse is rejected without a prompt. The wallet does not select inp
 for `signPsbt`; it signs exactly the transaction the dApp presents, so the dApp is responsible for
 building a correct PSBT (see the wallet's own unsigned-PSBT export for the format).
 
-### `signAssetListing({ psbt })`
+### `createAssetListing({ assetName, priceSats, amount? })`
 
-- **params**: `{ psbt: string }` — a base64 PSBT (BIP174), at most 100000 characters
-- **result**: `{ psbt: string, assetName: string, assetAmount: string, priceSats: number, payTo: string }`
+- **params**: `{ assetName: string, priceSats: number, amount?: string }`
+- **result**: `{ psbt, assetName, assetAmount, priceSats, payTo, assetUtxo: { txid, vout } }`
 
-**Sells an asset.** This is the one method that signs an asset input, and it does so with
-`SIGHASH_SINGLE | SIGHASH_FORKID | SIGHASH_ANYONECANPAY` (`0xc3`) — the marketplace listing
-sighash. SINGLE commits to the output at the signed input's index; ANYONECANPAY commits to that
-input alone. The seller therefore commits to exactly *"I spend this asset UTXO and I am paid this
-amount"*, and a buyer can add payment inputs, an asset destination and change without invalidating
-the signature.
+**The wallet builds the listing.** A dApp says *what* to sell and *for how much*; it never supplies
+a PSBT. The wallet owns the UTXOs, so it is the side that knows which output holds the asset — and
+a request that can only name an asset and a price has almost no surface to attack with, where a
+site-supplied PSBT is arbitrary structure the wallet must reason about.
 
-That bound is the whole safety argument, so the wallet enforces the shape it depends on. The PSBT
-must be **exactly one input and one output**:
+The wallet selects the asset UTXO, builds one input and one output, signs with
+`SIGHASH_SINGLE | SIGHASH_FORKID | SIGHASH_ANYONECANPAY` (`0xc3`) and finalises. SINGLE commits to
+the output at the signed input's index; ANYONECANPAY commits to that input alone. The seller
+therefore commits to exactly *"I spend this asset UTXO and I am paid this amount"*, and a buyer can
+append payment inputs, an asset destination and change without invalidating the signature.
 
-```
-input[0]   the seller's asset UTXO, with its prevout data (nonWitnessUtxo)
-output[0]  the payment, paying the connected account
-```
+`amount` is the `10^8`-scaled quantity as a **decimal string** (JSON has no bigint). Omit it for a
+unique, or any asset the account holds as a single output.
 
-Anything else is refused rather than partially signed:
+**Partial sales are refused.** The listed output must hold exactly the amount being sold. Since
+SINGLE covers only `output[0]`, asset change returning the remainder to the seller would be
+uncommitted — a buyer could drop it, take the whole output and still pay only the listed price.
+Selling part of a larger holding needs that output split first, in its own transaction.
 
-| Refused when | Why |
-| --- | --- |
-| more than one input or output | uncommitted structure the user was never shown |
-| `input[0]` is not an asset | this method exists only to sell assets; use `signPsbt` |
-| `input[0]` is not held by the connected account | not the seller's to sell |
-| `output[0]` pays anyone but the connected account | the signature commits to this output alone, so paying elsewhere signs the asset away for nothing |
-| `output[0]` is zero or negative | not a sale |
-| the input is already signed | listings are signed once |
-| the prevout data is missing | the asset and its owner cannot be verified |
+Other refusals: an asset the account does not hold; a holding spread across several outputs with no
+`amount` given; a price that is not a positive whole number of satoshis. The wallet also re-reads
+the asset name out of the signed output script and refuses if it does not match the request, so a
+misfiltering server cannot cause the wrong item to be listed.
 
-`assetAmount` is `10^8`-scaled and returned as a **decimal string**, because JSON has no bigint.
-The returned PSBT has `input[0]` signed *and finalised* — Avian Core cannot decode a FORKID
-`partial_sig`, so a listing that is passed around before a buyer combines it must carry a
-`final_scriptsig`.
+`assetUtxo` identifies the output the listing spends, so a dApp can tell a live listing from one
+whose asset has since moved.
 
-The signature commits to `input[0]`'s sequence, so a buyer must preserve it when combining.
+Requires an existing permission, an approval screen naming the asset and price, and wallet
+authentication. Remembering a site never covers a sale.
 
-Requires an existing permission, wallet authentication, and an explicit approval screen showing the
-asset, the quantity, the price and the paying address. Remembering a site never covers a sale:
-every listing is approved individually.
+### `completeAssetListing({ psbt })`
 
-**Buyers** need no new method. Once a seller-signed listing is combined with the buyer's payment
-inputs and outputs, `signPsbt` signs the buyer's own inputs with `SIGHASH_ALL | SIGHASH_FORKID` and
-leaves the seller's finalised input untouched. Since the buyer completes the transaction, they can
-pass `broadcast: true` and have the wallet send it — the losing side of a race for the same listing
-comes back as a `broadcastError` rather than a silent failure.
+- **params**: `{ psbt: string }` — a seller-signed listing, at most 100000 characters
+- **result**: `{ psbt, broadcast, txid?, broadcastError?, assetName, assetAmount, pricePaidSats, feeSats }`
 
-`broadcast: true` is rejected for `signAssetListing` itself: a listing is deliberately incomplete,
-so there is never anything to send.
+**The buyer's wallet completes the swap.** It decodes the seller's listing, funds it from the
+connected account, appends the asset destination and change, signs its own inputs and broadcasts,
+returning the `txid`.
+
+Everything shown to the buyer is decoded from the seller-signed bytes, never from what the dApp
+claims: **a site cannot show one price and have the buyer pay another.** The seller's input and
+payment output keep positions 0 and 0 — their signature commits to those positions — and everything
+the buyer adds is appended.
+
+Refused when: the PSBT is not a one-in/one-out listing; the seller has not signed it; the input is
+not an asset; the buyer cannot cover the price plus fee; or the listing belongs to the buyer (cancel
+it rather than buying from yourself).
+
+A failed broadcast returns `broadcast: false` with a `broadcastError` and the completed PSBT, so the
+dApp can retry. **A marketplace race lands here**: if another buyer took the listing first, its
+asset UTXO is spent and the broadcast fails with `missing-inputs`. The buyer pays nothing.
+
+### What a marketplace still does
+
+Orchestration and integrity, no PSBT carpentry:
+
+1. Hand the seller's client `{ assetName, priceSats }` → `createAssetListing` → index the returned
+   signed PSBT, cross-checked against the request using the returned `assetName` and `priceSats`.
+2. Serve a stored listing PSBT to a buyer → `completeAssetListing` → confirm via the returned
+   `txid`.
+
+The wallet re-derives the truth at both ends, so an indexing mistake cannot make anyone sign or pay
+something they were not shown.
 
 ### `getNetwork()`
 

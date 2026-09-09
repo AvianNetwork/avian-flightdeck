@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  CompleteAssetListingResult,
+  CreateAssetListingResult,
   OriginPermission,
-  SignAssetListingResult,
   SignPsbtResult,
 } from '@/types/avianConnect';
 import { grantPermission, revokePermission, touchPermission } from './permissions';
@@ -45,12 +46,22 @@ const SIGNED_PSBT: SignPsbtResult = {
   signedInputs: 1,
   broadcast: false,
 };
-const SIGNED_LISTING: SignAssetListingResult = {
+const SIGNED_LISTING: CreateAssetListingResult = {
   psbt: PSBT,
   assetName: 'RLM#BRBAEY6A94VXQ',
   assetAmount: '100000000',
   priceSats: 500 * 100_000_000,
   payTo: ADDRESS,
+  assetUtxo: { txid: 'a'.repeat(64), vout: 0 },
+};
+const BOUGHT: CompleteAssetListingResult = {
+  psbt: PSBT,
+  broadcast: true,
+  txid: 'b'.repeat(64),
+  assetName: 'RLM#BRBAEY6A94VXQ',
+  assetAmount: '100000000',
+  pricePaidSats: 500 * 100_000_000,
+  feeSats: 512_500,
 };
 
 const createHost = (overrides: Partial<ReturnType<typeof baseHost>> = {}) => ({
@@ -71,7 +82,9 @@ function baseHost() {
     requestSignPsbtApproval: vi.fn(async () => true),
     signPsbt: vi.fn(async () => SIGNED_PSBT as SignPsbtResult | null),
     requestSignAssetListingApproval: vi.fn(async () => true),
-    signAssetListing: vi.fn(async () => SIGNED_LISTING as SignAssetListingResult | null),
+    createAssetListing: vi.fn(async () => SIGNED_LISTING as CreateAssetListingResult | null),
+    requestBuyAssetApproval: vi.fn(async () => true),
+    completeAssetListing: vi.fn(async () => BOUGHT as CompleteAssetListingResult | null),
     getPublicKey: vi.fn(async () => undefined as string | undefined),
     getNetwork: vi.fn(async () => ({ network: 'mainnet' as const, genesisHash: null })),
     emit: vi.fn(),
@@ -329,7 +342,9 @@ describe('signMessage', () => {
   });
 });
 
-describe('signAssetListing', () => {
+describe('createAssetListing', () => {
+  const LIST = { assetName: 'RLM#BRBAEY6A94VXQ', priceSats: 500 * 100_000_000 };
+
   const connectFirst = async (host: ReturnType<typeof baseHost>) => {
     const provider = new ProviderService(ORIGIN, host);
     await provider.handle(request('connect'));
@@ -339,11 +354,11 @@ describe('signAssetListing', () => {
   it('requires a permission', async () => {
     const host = createHost();
     const response = await new ProviderService(ORIGIN, host).handle(
-      request('signAssetListing', { psbt: PSBT }),
+      request('createAssetListing', LIST),
     );
 
     expect(response.error?.code).toBe('ORIGIN_NOT_APPROVED');
-    expect(host.signAssetListing).not.toHaveBeenCalled();
+    expect(host.createAssetListing).not.toHaveBeenCalled();
   });
 
   it('reports WALLET_LOCKED before anything else', async () => {
@@ -351,50 +366,101 @@ describe('signAssetListing', () => {
     const provider = await connectFirst(host);
     host.isLocked.mockReturnValue(true);
 
-    const response = await provider.handle(request('signAssetListing', { psbt: PSBT }));
+    const response = await provider.handle(request('createAssetListing', LIST));
 
     expect(response.error?.code).toBe('WALLET_LOCKED');
-    expect(host.signAssetListing).not.toHaveBeenCalled();
+    expect(host.createAssetListing).not.toHaveBeenCalled();
   });
 
-  it('always shows the approval screen — remembering a site never covers selling an asset', async () => {
+  it('takes an asset and a price — never a PSBT the site composed', async () => {
     const host = createHost();
     const provider = await connectFirst(host);
 
-    const response = await provider.handle(request('signAssetListing', { psbt: PSBT }));
+    const response = await provider.handle(request('createAssetListing', LIST));
 
-    expect(host.requestSignAssetListingApproval).toHaveBeenCalledWith(ORIGIN, PSBT, ADDRESS);
+    expect(host.requestSignAssetListingApproval).toHaveBeenCalledWith(
+      ORIGIN,
+      LIST.assetName,
+      LIST.priceSats,
+      ADDRESS,
+    );
+    expect(host.createAssetListing).toHaveBeenCalledWith(ADDRESS, {
+      assetName: LIST.assetName,
+      priceSats: LIST.priceSats,
+      amount: undefined,
+    });
     expect(response.result).toEqual(SIGNED_LISTING);
   });
 
-  it('never signs when the user rejects the listing', async () => {
+  it('never lists when the user rejects', async () => {
     const host = createHost({ requestSignAssetListingApproval: vi.fn(async () => false) });
     const provider = await connectFirst(host);
 
-    const response = await provider.handle(request('signAssetListing', { psbt: PSBT }));
+    const response = await provider.handle(request('createAssetListing', LIST));
 
     expect(response.error?.code).toBe('USER_REJECTED');
-    expect(host.signAssetListing).not.toHaveBeenCalled();
+    expect(host.createAssetListing).not.toHaveBeenCalled();
   });
 
-  it('reports a cancelled authentication as a rejection', async () => {
-    const host = createHost({ signAssetListing: vi.fn(async () => null) });
-    const provider = await connectFirst(host);
-
-    const response = await provider.handle(request('signAssetListing', { psbt: PSBT }));
-
-    expect(response.error?.code).toBe('USER_REJECTED');
-  });
-
-  it('rejects a missing or malformed psbt without prompting', async () => {
+  it('rejects a malformed asset name, price or amount without prompting', async () => {
     const host = createHost();
     const provider = await connectFirst(host);
 
-    for (const params of [undefined, { psbt: '' }, { psbt: 'not base64!' }]) {
-      const response = await provider.handle(request('signAssetListing', params));
+    for (const params of [
+      undefined,
+      { priceSats: 1 },
+      { assetName: '', priceSats: 1 },
+      { assetName: 'X'.repeat(65), priceSats: 1 },
+      { ...LIST, priceSats: 0 },
+      { ...LIST, priceSats: -1 },
+      { ...LIST, priceSats: 1.5 },
+      { ...LIST, priceSats: '500' },
+      { ...LIST, amount: 1 },
+      { ...LIST, amount: 'not a number' },
+    ]) {
+      const response = await provider.handle(request('createAssetListing', params));
       expect(response.error?.code).toBe('INVALID_REQUEST');
     }
     expect(host.requestSignAssetListingApproval).not.toHaveBeenCalled();
+  });
+});
+
+describe('completeAssetListing', () => {
+  const connectFirst = async (host: ReturnType<typeof baseHost>) => {
+    const provider = new ProviderService(ORIGIN, host);
+    await provider.handle(request('connect'));
+    return provider;
+  };
+
+  it('requires a permission', async () => {
+    const host = createHost();
+    const response = await new ProviderService(ORIGIN, host).handle(
+      request('completeAssetListing', { psbt: PSBT }),
+    );
+
+    expect(response.error?.code).toBe('ORIGIN_NOT_APPROVED');
+    expect(host.completeAssetListing).not.toHaveBeenCalled();
+  });
+
+  it('shows the buyer what the seller signed, then buys', async () => {
+    const host = createHost();
+    const provider = await connectFirst(host);
+
+    const response = await provider.handle(request('completeAssetListing', { psbt: PSBT }));
+
+    expect(host.requestBuyAssetApproval).toHaveBeenCalledWith(ORIGIN, PSBT, ADDRESS);
+    expect(host.completeAssetListing).toHaveBeenCalledWith(ADDRESS, PSBT);
+    expect(response.result).toEqual(BOUGHT);
+  });
+
+  it('never buys when the user rejects', async () => {
+    const host = createHost({ requestBuyAssetApproval: vi.fn(async () => false) });
+    const provider = await connectFirst(host);
+
+    const response = await provider.handle(request('completeAssetListing', { psbt: PSBT }));
+
+    expect(response.error?.code).toBe('USER_REJECTED');
+    expect(host.completeAssetListing).not.toHaveBeenCalled();
   });
 });
 
