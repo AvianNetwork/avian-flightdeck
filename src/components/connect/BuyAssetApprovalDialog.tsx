@@ -28,6 +28,9 @@ interface BuyAssetApprovalDialogProps {
   account: string;
   /** Decoded from the seller-signed listing, never from what the site claims it costs. */
   listing: AssetListingPreview | null;
+  /** Offered when more than one wallet could sign; switching rejects this request. */
+  onSwitchAccount?: () => void;
+
   onDecision: (approved: boolean) => void;
 }
 
@@ -47,6 +50,7 @@ export default function BuyAssetApprovalDialog({
   origin,
   account,
   listing,
+  onSwitchAccount,
   onDecision,
 }: BuyAssetApprovalDialogProps) {
   const isMobile = useMediaQuery('(max-width: 768px)');
@@ -81,7 +85,20 @@ export default function BuyAssetApprovalDialog({
       )}
 
       <div className="space-y-2">
-        <Label className="text-sm font-medium">Paying from</Label>
+        <div className="flex items-center justify-between gap-2">
+          <Label className="text-sm font-medium">Paying from</Label>
+          {onSwitchAccount && (
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-xs"
+              onClick={onSwitchAccount}
+            >
+              Use a different wallet
+            </Button>
+          )}
+        </div>
         <p className="break-all rounded-md border bg-muted/20 p-2 font-mono text-xs">{account}</p>
       </div>
 

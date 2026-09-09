@@ -448,6 +448,21 @@ site is told via `accountsChanged`.
 
 ---
 
+### Changing which wallet a site uses
+
+A grant pins one account, and `connect` returns it without prompting for as long as the site is
+remembered — that is what "remember this site" buys. But a user with several wallets will sometimes
+be asked to sign with the wrong one, and revoking the site just to switch is a poor answer.
+
+Every approval screen therefore offers **Use a different wallet** when more than one exists. Taking
+it **rejects the pending request** with `USER_REJECTED`, moves the grant to the chosen account, and
+emits `accountsChanged`. The site should re-read the account and ask again.
+
+The request is rejected rather than quietly re-pointed at the new wallet: the site asked a specific
+account to sign, and a signature from a different one would fail whatever check it does against the
+address `connect` handed it. A dApp that handles `accountsChanged` and retries will see this as a
+normal account switch.
+
 ## 8. Versioning
 
 `avianConnect: 1` is the phase-1 wire version. Additive changes (new methods, new optional result
