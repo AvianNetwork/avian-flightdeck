@@ -27,6 +27,7 @@ import { runWithConcurrency } from './concurrency';
 import { estimateTxFee, DEFAULT_FEE_RATE_SAT_PER_VBYTE, DUST_THRESHOLD_SATS } from './fees';
 import {
     SIGHASH_ALL_FORKID,
+    SIGHASH_SINGLE_FORKID_ANYONECANPAY,
     isAssetScript,
     type PsbtSummary,
     type PsbtInputSummary,
@@ -38,6 +39,7 @@ import {
     buildOwnerScript,
     buildReissueScript,
     isValidRootAssetName,
+    parseAssetScript,
     ISSUE_BURN,
 } from './assetScript';
 import { isAssetIssuanceEnabled, ASSET_ISSUANCE_DISABLED_MESSAGE } from '@/lib/featureFlags';
@@ -80,6 +82,17 @@ export const ADDRESS_TYPE_INFO: Record<AddressType, { purpose: number; label: st
  * — the transaction is signed and valid but nothing has been spent, so the txid is what it *would*
  * have, not something on chain yet.
  */
+/** What a marketplace listing sells, and for how much. */
+export interface AssetListingPreview {
+    assetName: string;
+    /** Quantity, 10^8-scaled. */
+    assetAmount: bigint;
+    /** What the seller is paid, in satoshis. */
+    priceSats: number;
+    /** Address the payment output pays — always the selling account. */
+    payTo: string;
+}
+
 export interface AssetTxResult {
     txid: string;
     /** Raw signed transaction, ready for `testmempoolaccept` or a manual broadcast. */
@@ -704,6 +717,122 @@ export class WalletService {
         } else {
             psbt.updateInput(index, { finalScriptSig: bitcoin.script.compile([sig, pub]) });
         }
+    }
+
+    /**
+     * Validate that `psbtBase64` is a listing `account` can safely sell, and describe it.
+     *
+     * Throws with the reason when it is not. No key access, so the approval screen can call it
+     * before authentication — the user sees what the sale is before being asked for a password.
+     */
+    async previewAssetListing(psbtBase64: string, account?: string): Promise<AssetListingPreview> {
+        const psbt = bitcoin.Psbt.fromBase64(psbtBase64, { network: avianNetwork });
+        const address = account ?? (await StorageService.getActiveWallet())?.address;
+        if (!address) throw new Error('No account to check this listing against');
+        return this.inspectAssetListing(psbt, address).preview;
+    }
+
+    /**
+     * The whole safety argument for signing an asset input, in one place.
+     *
+     * A listing is exactly one input and one output: the seller's asset UTXO, and the seller's
+     * payment. Signed with SINGLE|FORKID|ANYONECANPAY that commits to precisely those two things,
+     * so whatever a buyer adds afterwards, the seller is paid. Every check below protects one part
+     * of that sentence, and anything unrecognised is refused rather than partially signed.
+     */
+    private inspectAssetListing(
+        psbt: bitcoin.Psbt,
+        address: string,
+    ): { preview: AssetListingPreview; prevScript: Buffer } {
+        if (psbt.inputCount !== 1 || psbt.txOutputs.length !== 1) {
+            throw new Error(
+                `A listing must have exactly one input and one output (got ${psbt.inputCount} in, ${psbt.txOutputs.length} out)`,
+            );
+        }
+        if (this.inputHasAnySig(psbt.data.inputs[0])) {
+            throw new Error('This listing is already signed');
+        }
+
+        const prev = this.psbtPrevOut(psbt, 0);
+        if (!prev) {
+            throw new Error('The listing input is missing its UTXO data, so it cannot be verified');
+        }
+        if (!isAssetScript(prev.script)) {
+            throw new Error('The listing input does not hold an asset');
+        }
+
+        const asset = parseAssetScript(prev.script);
+        if (!asset || asset.amount === null) {
+            throw new Error('The listing input carries an unreadable asset script');
+        }
+
+        // Asset scripts are a P2PKH with the asset payload appended, so ownership is the P2PKH part.
+        const ourScript = bitcoin.address.toOutputScript(address, avianNetwork);
+        if (!prev.script.subarray(0, ourScript.length).equals(ourScript)) {
+            throw new Error('The listing input is not held by this account');
+        }
+
+        // The payment is the entire commitment. If it pays anyone else, the seller signs the asset
+        // away for nothing.
+        const payTo = this.scriptToAddress(psbt.txOutputs[0].script);
+        if (!payTo || payTo !== address) {
+            throw new Error('The listing payment output does not pay this account');
+        }
+        if (psbt.txOutputs[0].value <= 0) {
+            throw new Error('The listing payment must be greater than zero');
+        }
+
+        return {
+            preview: {
+                assetName: asset.name,
+                assetAmount: asset.amount,
+                priceSats: psbt.txOutputs[0].value,
+                payTo,
+            },
+            prevScript: prev.script,
+        };
+    }
+
+    /**
+     * Sign a marketplace **listing**: commit to selling the asset at `input[0]` for the payment at
+     * `output[0]`, using SIGHASH_SINGLE|FORKID|ANYONECANPAY.
+     *
+     * This is the one place an asset input is ever signed, and it is safe because of the sighash:
+     * SINGLE|ANYONECANPAY commits to this input and this output only, so the seller is guaranteed
+     * their payment whatever a buyer later adds. `signPsbt` still refuses asset inputs, because a
+     * SIGHASH_ALL signature over a site-supplied transaction carries no such guarantee.
+     */
+    async signAssetListing(
+        psbtBase64: string,
+        password?: string,
+        account?: string,
+    ): Promise<AssetListingPreview & { psbt: string }> {
+        const psbt = bitcoin.Psbt.fromBase64(psbtBase64, { network: avianNetwork });
+        const address = account ?? (await StorageService.getActiveWallet())?.address;
+        if (!address) throw new Error('No account to sign this listing with');
+
+        const { preview, prevScript } = this.inspectAssetListing(psbt, address);
+
+        const keyPair = await this.getWalletKeyPair(password, account);
+        const pubkey = Buffer.from(keyPair.publicKey);
+        // The key must match the address the listing was checked against, or the checks above
+        // described a different account's sale.
+        const keyScript = bitcoin.payments.p2pkh({ pubkey, network: avianNetwork }).output!;
+        if (!prevScript.subarray(0, keyScript.length).equals(keyScript)) {
+            throw new Error('The listing input is not held by this account');
+        }
+
+        const unsigned = this.unsignedTxFromPsbt(psbt);
+        const digest = unsigned.hashForSignature(0, prevScript, SIGHASH_SINGLE_FORKID_ANYONECANPAY);
+        const sig = this.encodeDERWithCustomHashType(
+            Buffer.from(keyPair.sign(digest)),
+            SIGHASH_SINGLE_FORKID_ANYONECANPAY,
+        );
+        // Finalize rather than leaving a partial_sig: Avian Core cannot decode a FORKID partial_sig
+        // (see signPsbt), and a listing is stored and passed around before a buyer combines it.
+        this.setFinalScript(psbt, 0, sig, pubkey, false);
+
+        return { ...preview, psbt: psbt.toBase64() };
     }
 
     /**

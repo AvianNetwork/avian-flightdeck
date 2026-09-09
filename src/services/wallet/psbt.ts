@@ -7,6 +7,18 @@
 /** SIGHASH_ALL (0x01) | SIGHASH_FORKID (0x40). Every Avian signature must carry this. */
 export const SIGHASH_ALL_FORKID = 0x41;
 
+/**
+ * SIGHASH_SINGLE (0x03) | SIGHASH_FORKID (0x40) | SIGHASH_ANYONECANPAY (0x80) — the marketplace
+ * listing sighash.
+ *
+ * SINGLE commits to the output at the signed input's index; ANYONECANPAY commits to that input
+ * alone. A seller signing input[0] against output[0] therefore commits to exactly "I spend this
+ * asset UTXO and I am paid this amount", leaving a buyer free to add payment inputs, an asset
+ * destination and change without invalidating the signature. That bound is what makes signing an
+ * asset input safe here, where it is refused everywhere else.
+ */
+export const SIGHASH_SINGLE_FORKID_ANYONECANPAY = 0xc3;
+
 /** OP_AVN_ASSET — marks an Avian asset script. See Avian Core script/script.h. */
 export const OP_AVN_ASSET = 0xc0;
 

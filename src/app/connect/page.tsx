@@ -15,12 +15,13 @@ import ConnectApprovalDialog, {
 } from '@/components/connect/ConnectApprovalDialog';
 import SignMessageApprovalDialog from '@/components/connect/SignMessageApprovalDialog';
 import SignPsbtApprovalDialog from '@/components/connect/SignPsbtApprovalDialog';
+import SignAssetListingApprovalDialog from '@/components/connect/SignAssetListingApprovalDialog';
 import type { PsbtSummary } from '@/services/wallet/psbt';
 
 import { useWallet } from '@/contexts/WalletContext';
 import { useSecurity } from '@/contexts/SecurityContext';
 import { StorageService } from '@/services/core/StorageService';
-import { WalletService } from '@/services/wallet/WalletService';
+import { WalletService, type AssetListingPreview } from '@/services/wallet/WalletService';
 import { providerLogger } from '@/lib/Logger';
 import {
   ConnectApprovalDecision,
@@ -50,6 +51,12 @@ interface PsbtPrompt {
   summary: PsbtSummary;
 }
 
+interface ListingPrompt {
+  origin: string;
+  account: string;
+  listing: AssetListingPreview;
+}
+
 /** Channel used by Settings → Connected Sites to tell a live session its grants changed. */
 const PERMISSION_CHANNEL = 'avian-connect';
 
@@ -69,6 +76,7 @@ function ConnectClient() {
   const [connectPromptOrigin, setConnectPromptOrigin] = useState<string | null>(null);
   const [signPrompt, setSignPrompt] = useState<SignPrompt | null>(null);
   const [psbtPrompt, setPsbtPrompt] = useState<PsbtPrompt | null>(null);
+  const [listingPrompt, setListingPrompt] = useState<ListingPrompt | null>(null);
   const [completed, setCompleted] = useState<{ origin: string; method: string } | null>(null);
 
   // Live values the (stable) provider host closures read from.
@@ -82,6 +90,7 @@ function ConnectClient() {
   const connectResolverRef = useRef<((decision: ConnectApprovalDecision) => void) | null>(null);
   const signResolverRef = useRef<((approved: boolean) => void) | null>(null);
   const psbtResolverRef = useRef<((approved: boolean) => void) | null>(null);
+  const listingResolverRef = useRef<((approved: boolean) => void) | null>(null);
   const providerRef = useRef<ProviderService | null>(null);
   const pendingIdsRef = useRef<Set<string>>(new Set());
   const answeredRef = useRef<Map<string, ConnectResponse>>(new Map());
@@ -158,6 +167,32 @@ function ConnectClient() {
     setSignPrompt(null);
     const resolver = signResolverRef.current;
     signResolverRef.current = null;
+    resolver?.(approved);
+  }, []);
+
+  const requestSignAssetListingApproval = useCallback(
+    async (origin: string, psbt: string, account: string) => {
+      // Describe the sale before showing it: a listing that will not verify is refused without
+      // troubling the user.
+      let listing: AssetListingPreview;
+      try {
+        listing = await walletService.previewAssetListing(psbt, account);
+      } catch (error) {
+        providerLogger.warn('Rejected an unusable asset listing from a site:', error);
+        return false;
+      }
+      return new Promise<boolean>((resolve) => {
+        listingResolverRef.current = resolve;
+        setListingPrompt({ origin, account, listing });
+      });
+    },
+    [walletService],
+  );
+
+  const resolveListingPrompt = useCallback((approved: boolean) => {
+    setListingPrompt(null);
+    const resolver = listingResolverRef.current;
+    listingResolverRef.current = null;
     resolver?.(approved);
   }, []);
 
@@ -259,6 +294,31 @@ function ConnectClient() {
         // switches wallets, and the approval screen was scored against this account.
         const signed = await walletService.signPsbt(psbt, auth.password, account);
         return { psbt: signed.psbt, complete: signed.complete, signedInputs: signed.signedInputs };
+      },
+
+      requestSignAssetListingApproval,
+
+      signAssetListing: async (account: string, psbt: string) => {
+        const wallet = await StorageService.getWalletByAddress(account);
+        if (!wallet?.privateKey) {
+          providerLogger.warn('No private key available for the requested account');
+          return null;
+        }
+
+        const auth = await requireAuthRef.current(
+          `Authenticate to sell an asset via ${pinnedOriginRef.current || 'this site'}`,
+        );
+        if (!auth.success) return null;
+
+        const signed = await walletService.signAssetListing(psbt, auth.password, account);
+        return {
+          psbt: signed.psbt,
+          assetName: signed.assetName,
+          // JSON has no bigint, so the quantity crosses the boundary as a decimal string.
+          assetAmount: signed.assetAmount.toString(),
+          priceSats: signed.priceSats,
+          payTo: signed.payTo,
+        };
       },
 
       getPublicKey: async (account: string) => {
@@ -616,6 +676,14 @@ function ConnectClient() {
         account={psbtPrompt?.account || ''}
         summary={psbtPrompt?.summary || null}
         onDecision={resolvePsbtPrompt}
+      />
+
+      <SignAssetListingApprovalDialog
+        open={listingPrompt !== null}
+        origin={listingPrompt?.origin || ''}
+        account={listingPrompt?.account || ''}
+        listing={listingPrompt?.listing || null}
+        onDecision={resolveListingPrompt}
       />
     </GradientBackground>
   );

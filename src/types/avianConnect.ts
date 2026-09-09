@@ -25,6 +25,7 @@ export const SUPPORTED_METHODS = [
   'getAccounts',
   'signMessage',
   'signPsbt',
+  'signAssetListing',
   'getNetwork',
   'disconnect',
 ] as const;
@@ -79,6 +80,28 @@ export interface ConnectResult {
 
 export interface SignMessageResult {
   signature: string;
+}
+
+/**
+ * signAssetListing sells an asset: the wallet signs the seller's asset input with
+ * SIGHASH_SINGLE|FORKID|ANYONECANPAY, committing to that input and the payment output alone. A
+ * buyer can then add payment inputs, an asset destination and change without invalidating it.
+ *
+ * It is deliberately separate from signPsbt, which still refuses every asset input. Widening
+ * signPsbt instead would let any connected site slip an asset input into an ordinary signing
+ * request, where a SIGHASH_ALL signature carries none of the guarantees this shape does.
+ */
+export interface SignAssetListingResult {
+  /** The base64 PSBT with the seller's input signed and finalised. */
+  psbt: string;
+  /** Asset the listing sells, e.g. `RLM#BRBAEY6A94VXQ`. */
+  assetName: string;
+  /** Asset quantity, 10^8-scaled, as a decimal string (JSON has no bigint). */
+  assetAmount: string;
+  /** What the seller is paid, in satoshis. */
+  priceSats: number;
+  /** Address the payment output pays — always the connected account. */
+  payTo: string;
 }
 
 /**
