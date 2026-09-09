@@ -231,6 +231,25 @@ misfiltering server cannot cause the wrong item to be listed.
 `assetUtxo` identifies the output the listing spends, so a dApp can tell a live listing from one
 whose asset has since moved.
 
+**A listing is deliberately unbalanced and must never be broadcast on its own.** Its only input is
+the asset UTXO, which carries 0 AVN, while its only output pays the asking price — so it spends
+nothing and pays out everything, and the buyer's inputs are what make it balance. Core's PSBT screen
+does not understand half-finished swaps: it reports "fully signed and ready for broadcast" (meaning
+every input has a `final_scriptSig`) and offers a Broadcast button, with the nonsensical negative fee
+shown as `Pays transaction fee: -500.00000000 AVN`.
+
+Broadcasting it anyway is harmless — the network refuses it outright:
+
+```
+testmempoolaccept → allowed: false
+  bad-txns-in-belowout, value in (0.00) < value out (500.00)
+```
+
+Worth knowing that this rejection is on **value**, before script evaluation, so no signature is
+verified by it. Neither `finalizepsbt` reporting `complete: true` nor Core's "fully signed" says
+anything about whether a listing's signature is valid — both are structural claims. Only a completed
+swap exercises the signature.
+
 Requires an existing permission, an approval screen naming the asset and price, and wallet
 authentication. Remembering a site never covers a sale.
 
