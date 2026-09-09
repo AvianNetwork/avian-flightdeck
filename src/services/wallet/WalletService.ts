@@ -556,10 +556,20 @@ export class WalletService {
     // bitcoinjs already produces for legacy and SegWit-v0 inputs when that type is set. So signing
     // reuses the same path regular sends use. Asset inputs are never signed (that would burn them).
 
-    /** Decrypt the active wallet's key into an ECPair (throws on a missing/bad password). */
-    private async getActiveKeyPair(password?: string) {
-        const activeWallet = await StorageService.getActiveWallet();
-        if (!activeWallet) throw new Error('No active wallet found');
+    /**
+     * Decrypt a wallet's key into an ECPair (throws on a missing/bad password).
+     *
+     * `address` picks a specific wallet; without it the active wallet is used. Avian Connect
+     * signs for the account a site connected with, which is not necessarily the active one — the
+     * user may have switched wallets mid-session.
+     */
+    private async getWalletKeyPair(password?: string, address?: string) {
+        const activeWallet = address
+            ? await StorageService.getWalletByAddress(address)
+            : await StorageService.getActiveWallet();
+        if (!activeWallet) {
+            throw new Error(address ? `No wallet found for ${address}` : 'No active wallet found');
+        }
         let wif = activeWallet.privateKey;
         if (activeWallet.isEncrypted) {
             if (!password) throw new Error('Password required for encrypted wallet');
@@ -697,8 +707,14 @@ export class WalletService {
     }
 
     /**
-     * Sign every input the active wallet owns — skipping asset inputs and any already signed — with
-     * the Avian FORKID sighash, and return the updated base64 PSBT with those inputs finalized.
+     * Sign every input owned by `account` (defaulting to the active wallet) — skipping asset inputs
+     * and any already signed — with the Avian FORKID sighash, returning the updated base64 PSBT
+     * with those inputs finalized.
+     *
+     * Callers that signed on behalf of somebody else — Avian Connect signs for the account a site
+     * connected with — must pass `account`. Defaulting to the active wallet there would sign with
+     * whichever wallet the user last switched to, which is not the one the approval screen
+     * described.
      *
      * Two Avian-specific reasons this doesn't use bitcoinjs-lib's PSBT signer/finaliser:
      *  1. Its signer rejects the 0x41 (ALL|FORKID) sighash ("Invalid hashType 65"), so we compute
@@ -716,9 +732,10 @@ export class WalletService {
     async signPsbt(
         psbtBase64: string,
         password?: string,
+        account?: string,
     ): Promise<{ psbt: string; complete: boolean; signedInputs: number }> {
         const psbt = bitcoin.Psbt.fromBase64(psbtBase64, { network: avianNetwork });
-        const keyPair = await this.getActiveKeyPair(password);
+        const keyPair = await this.getWalletKeyPair(password, account);
         const pubkey = Buffer.from(keyPair.publicKey);
         const p2pkhScript = bitcoin.payments.p2pkh({ pubkey, network: avianNetwork }).output!;
         const p2wpkhScript = bitcoin.payments.p2wpkh({ pubkey, network: avianNetwork }).output!;
