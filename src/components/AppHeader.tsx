@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { ArrowLeft, Settings, Menu, Wallet, Bug, Code, Eye, Shield, Bell, Archive, HelpCircle } from 'lucide-react';
+import { ArrowLeft, Settings, Menu, Wallet, Bug, Code, Eye, Shield, Bell, Archive, PlugZap, HelpCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useSidebar } from '@/components/ui/sidebar';
 
@@ -29,6 +29,7 @@ const getPageInfo = (pathname: string) => {
         'settings/advanced': { title: 'Advanced Settings', icon: Settings, subtitle: 'Developer tools, logs, and advanced configuration' },
         'settings/advanced/logs': { title: 'Debug Logs', icon: Bug, subtitle: 'View application logs and debugging information' },
         'settings/advanced/messages': { title: 'Message Utilities', icon: Code, subtitle: 'Sign and verify messages with your wallet' },
+        'settings/connected-sites': { title: 'Connected Sites', icon: PlugZap, subtitle: 'Review and revoke dApps connected to this wallet' },
         'settings/watched-addresses': { title: 'Watched Addresses', icon: Eye, subtitle: 'Monitor addresses without importing private keys' },
         'settings/help': { title: 'Help & Support', icon: HelpCircle, subtitle: 'Documentation, support, and app information' },
         'onboarding': { title: 'Setup Wallet', icon: Wallet, subtitle: 'Create or restore your wallet' },

@@ -8,6 +8,7 @@ import {
     Shield,
     Archive,
     Bell,
+    PlugZap,
     HelpCircle,
     Bug,
     Code,
@@ -67,6 +68,11 @@ const navigationItems: NavItem[] = [
                 title: 'Backup & Recovery',
                 url: '/settings/backup',
                 icon: Archive,
+            },
+            {
+                title: 'Connected Sites',
+                url: '/settings/connected-sites',
+                icon: PlugZap,
             },
             {
                 title: 'Notifications',
