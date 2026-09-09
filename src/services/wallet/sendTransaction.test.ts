@@ -647,6 +647,60 @@ describe('buildUnsignedPsbt', () => {
     expect(outputsOf(tx)).toContainEqual({ address: RECIPIENT, value: 100_000 });
   });
 
+  it('signs for the named account, not whichever wallet happens to be active', async () => {
+    // Avian Connect signs for the account a site connected with. If the user switches wallets
+    // mid-session the active wallet differs, and signing with it would produce a transaction the
+    // approval screen never described — while leaving the connected account's input unsigned.
+    const connected = await createActiveWallet();
+    const { electrum } = createFakeElectrum(connected.address, [500_000]);
+    const wallet = new WalletService(electrum as never);
+    const { psbt } = await wallet.buildUnsignedPsbt(RECIPIENT, 100_000, { feeRate: RATE });
+
+    // A second wallet becomes active, as if the user switched after connecting.
+    const otherKey = ECPair.makeRandom({ network: avianNetwork });
+    const otherAddress = deriveAddress(Buffer.from(otherKey.publicKey), 'p2pkh');
+    await StorageService.createWallet({
+      name: 'Switched to',
+      address: otherAddress,
+      privateKey: await secureEncrypt(otherKey.toWIF(), TEST_PASSWORD),
+      isEncrypted: true,
+      makeActive: true,
+    });
+    expect((await StorageService.getActiveWallet())?.address).toBe(otherAddress);
+
+    const signed = await wallet.signPsbt(psbt, TEST_PASSWORD, connected.address);
+    expect(signed.signedInputs).toBe(1);
+
+    const { hex } = wallet.finalizePsbt(signed.psbt);
+    const tx = bitcoin.Transaction.fromHex(hex);
+    const [, pubkey] = bitcoin.script.decompile(tx.ins[0].script) as Buffer[];
+    expect(Buffer.from(pubkey).toString('hex')).toBe(
+      Buffer.from(connected.keyPair.publicKey).toString('hex'),
+    );
+  });
+
+  it('signs nothing when the active wallet does not own the inputs', async () => {
+    // The old behaviour, now reachable only by omitting the account: the active wallet's key does
+    // not match the input, so no input is signed. Fail-safe, but the caller gets an empty result.
+    const connected = await createActiveWallet();
+    const { electrum } = createFakeElectrum(connected.address, [500_000]);
+    const wallet = new WalletService(electrum as never);
+    const { psbt } = await wallet.buildUnsignedPsbt(RECIPIENT, 100_000, { feeRate: RATE });
+
+    const otherKey = ECPair.makeRandom({ network: avianNetwork });
+    await StorageService.createWallet({
+      name: 'Switched to',
+      address: deriveAddress(Buffer.from(otherKey.publicKey), 'p2pkh'),
+      privateKey: await secureEncrypt(otherKey.toWIF(), TEST_PASSWORD),
+      isEncrypted: true,
+      makeActive: true,
+    });
+
+    const signed = await wallet.signPsbt(psbt, TEST_PASSWORD);
+    expect(signed.signedInputs).toBe(0);
+    expect(signed.complete).toBe(false);
+  });
+
   it('refuses to export for a wrapped-SegWit wallet (needs the pubkey for a redeemScript)', async () => {
     // Register a p2sh-p2wpkh active wallet directly so the export guard trips.
     const keyPair = ECPair.makeRandom({ network: avianNetwork });

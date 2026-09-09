@@ -255,7 +255,9 @@ function ConnectClient() {
         if (!auth.success) return null;
 
         // Sign-only: return the updated PSBT. The wallet never broadcasts on a site's behalf.
-        const signed = await walletService.signPsbt(psbt, auth.password);
+        // Sign for the connected account, not the active wallet — they differ once the user
+        // switches wallets, and the approval screen was scored against this account.
+        const signed = await walletService.signPsbt(psbt, auth.password, account);
         return { psbt: signed.psbt, complete: signed.complete, signedInputs: signed.signedInputs };
       },
 
