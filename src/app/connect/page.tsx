@@ -22,6 +22,7 @@ import type { PsbtSummary } from '@/services/wallet/psbt';
 import { useWallet } from '@/contexts/WalletContext';
 import { useSecurity } from '@/contexts/SecurityContext';
 import { StorageService } from '@/services/core/StorageService';
+import { PermissionService } from '@/services/provider';
 import { WalletService, type AssetListingPreview } from '@/services/wallet/WalletService';
 import { providerLogger } from '@/lib/Logger';
 import {
@@ -105,7 +106,9 @@ function ConnectClient() {
   electrumRef.current = electrum;
   requireAuthRef.current = requireAuth;
 
-  const connectResolverRef = useRef<((decision: ConnectApprovalDecision) => void) | null>(null);
+  const connectResolverRef = useRef<
+    ((decision: ConnectApprovalDecision) => void | Promise<void>) | null
+  >(null);
   const signResolverRef = useRef<((approved: boolean) => void) | null>(null);
   const psbtResolverRef = useRef<((approved: boolean) => void) | null>(null);
   const listingResolverRef = useRef<((approved: boolean) => void) | null>(null);
@@ -170,7 +173,8 @@ function ConnectClient() {
     setConnectPromptOrigin(null);
     const resolver = connectResolverRef.current;
     connectResolverRef.current = null;
-    resolver?.(decision);
+    // The switch-account flow installs an async resolver; a connect request's is plain.
+    void resolver?.(decision);
   }, []);
 
   const requestSignApproval = useCallback(
@@ -270,6 +274,43 @@ function ConnectClient() {
       providerLogger.warn('Failed to emit Avian Connect event:', error);
     }
   }, []);
+
+  /**
+   * Sign with a different wallet than the one this site is connected with.
+   *
+   * The pending request is rejected rather than quietly re-pointed: the site asked this account to
+   * sign, and handing back a signature from another one would fail whatever check it does against
+   * the address `connect` gave it. Instead the grant is moved, `accountsChanged` is emitted, and
+   * the site can ask again — now against the wallet the user actually wants.
+   */
+  const switchAccount = useCallback(() => {
+    const origin = pinnedOriginRef.current;
+    if (!origin) return;
+
+    // Whichever approval is open, decline it.
+    for (const ref of [signResolverRef, psbtResolverRef, listingResolverRef, buyResolverRef]) {
+      const resolver = ref.current;
+      ref.current = null;
+      resolver?.(false);
+    }
+    setSignPrompt(null);
+    setPsbtPrompt(null);
+    setListingPrompt(null);
+    setBuyPrompt(null);
+
+    connectResolverRef.current = async (decision: ConnectApprovalDecision) => {
+      if (!decision.approved || decision.accounts.length === 0) return;
+      try {
+        await PermissionService.grant(origin, decision.accounts);
+        await providerRef.current?.refreshAccounts();
+        emit('accountsChanged', { accounts: decision.accounts });
+        setStatus(`Now using ${decision.accounts[0]}. Ask the site to try again.`);
+      } catch (error) {
+        providerLogger.error('Failed to switch the connected account:', error);
+      }
+    };
+    setConnectPromptOrigin(origin);
+  }, [emit]);
 
   const host = useMemo<ProviderHost>(
     () => ({
@@ -730,6 +771,7 @@ function ConnectClient() {
       />
 
       <SignMessageApprovalDialog
+        onSwitchAccount={accounts.length > 1 ? switchAccount : undefined}
         open={signPrompt !== null}
         origin={signPrompt?.origin || ''}
         account={signPrompt?.account || ''}
@@ -738,6 +780,7 @@ function ConnectClient() {
       />
 
       <SignPsbtApprovalDialog
+        onSwitchAccount={accounts.length > 1 ? switchAccount : undefined}
         open={psbtPrompt !== null}
         origin={psbtPrompt?.origin || ''}
         account={psbtPrompt?.account || ''}
@@ -747,6 +790,7 @@ function ConnectClient() {
       />
 
       <SignAssetListingApprovalDialog
+        onSwitchAccount={accounts.length > 1 ? switchAccount : undefined}
         open={listingPrompt !== null}
         origin={listingPrompt?.origin || ''}
         account={listingPrompt?.account || ''}
@@ -756,6 +800,7 @@ function ConnectClient() {
       />
 
       <BuyAssetApprovalDialog
+        onSwitchAccount={accounts.length > 1 ? switchAccount : undefined}
         open={buyPrompt !== null}
         origin={buyPrompt?.origin || ''}
         account={buyPrompt?.account || ''}

@@ -26,6 +26,9 @@ interface SignAssetListingApprovalDialogProps {
   account: string;
   assetName: string;
   priceSats: number;
+  /** Offered when more than one wallet could sign; switching rejects this request. */
+  onSwitchAccount?: () => void;
+
   onDecision: (approved: boolean) => void;
 }
 
@@ -37,6 +40,7 @@ export default function SignAssetListingApprovalDialog({
   account,
   assetName,
   priceSats,
+  onSwitchAccount,
   onDecision,
 }: SignAssetListingApprovalDialogProps) {
   const isMobile = useMediaQuery('(max-width: 768px)');
@@ -63,7 +67,20 @@ export default function SignAssetListingApprovalDialog({
       </div>
 
       <div className="space-y-2">
-        <Label className="text-sm font-medium">Payment goes to</Label>
+        <div className="flex items-center justify-between gap-2">
+          <Label className="text-sm font-medium">Payment goes to</Label>
+          {onSwitchAccount && (
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-xs"
+              onClick={onSwitchAccount}
+            >
+              Use a different wallet
+            </Button>
+          )}
+        </div>
         <p className="break-all rounded-md border bg-muted/20 p-2 font-mono text-xs">{account}</p>
       </div>
 
