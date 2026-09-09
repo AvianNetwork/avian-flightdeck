@@ -157,16 +157,34 @@ Nonce: 6f1a…
 Issued At: 2026-08-10T12:00:00Z
 ```
 
-### `signPsbt({ psbt })`
+### `signPsbt({ psbt, broadcast? })`
 
-- **params**: `{ psbt: string }` — a base64 PSBT (BIP174), at most 100000 characters
-- **result**: `{ psbt: string, complete: boolean, signedInputs: number }`
+- **params**: `{ psbt: string, broadcast?: boolean }` — a base64 PSBT (BIP174), at most 100000
+  characters
+- **result**: `{ psbt: string, complete: boolean, signedInputs: number, broadcast: boolean, txid?: string, broadcastError?: string }`
 
-**Sign-only.** The wallet signs the inputs the connected account owns with Avian's
-`SIGHASH_ALL | SIGHASH_FORKID` (`0x41`) sighash and hands the updated PSBT back. It **never
-broadcasts** on a site's behalf — the dApp finalises and broadcasts (or hands the PSBT on to
-another signer). `complete` is true when every input is now signed; `signedInputs` is how many
-this wallet added.
+The wallet signs the inputs the connected account owns with Avian's
+`SIGHASH_ALL | SIGHASH_FORKID` (`0x41`) sighash and hands the updated PSBT back. `complete` is true
+when every input is now signed; `signedInputs` is how many this wallet added.
+
+**Broadcasting is opt-in.** With `broadcast: true` the wallet finalises and sends the transaction
+once its own signature completes it, returning the `txid` and recording the spend in local history
+— so the completing signer of a swap sees the result in their wallet instead of an unchanged
+balance. Without the flag (the default) the wallet signs only and the dApp broadcasts.
+
+Withholding a broadcast is not a security boundary: once the signature is handed over the dApp can
+broadcast whenever it likes. What protects the user is the approval screen, which states plainly
+whether the transaction will be *signed* or *signed and sent* — those are different consents, and
+the flag changes what the user is shown.
+
+A requested broadcast is **best-effort and never loses the signature**. If it fails, the result
+carries `broadcast: false` and a `broadcastError`, with the signed PSBT still in `psbt`, so the dApp
+can retry or send it itself. Two cases to expect:
+
+| `broadcastError` | Meaning |
+| --- | --- |
+| `The transaction still needs other signatures` | our signature did not complete it; nothing was sent |
+| a node error such as `missing-inputs` | the inputs are already spent — in a marketplace, another buyer took the listing first |
 
 Asset inputs are **never** signed here (spending an Avian asset as a bare transfer would burn it),
 and they are surfaced in the approval screen. Selling an asset has its own method,
@@ -226,7 +244,12 @@ every listing is approved individually.
 
 **Buyers** need no new method. Once a seller-signed listing is combined with the buyer's payment
 inputs and outputs, `signPsbt` signs the buyer's own inputs with `SIGHASH_ALL | SIGHASH_FORKID` and
-leaves the seller's finalised input untouched.
+leaves the seller's finalised input untouched. Since the buyer completes the transaction, they can
+pass `broadcast: true` and have the wallet send it — the losing side of a race for the same listing
+comes back as a `broadcastError` rather than a silent failure.
+
+`broadcast: true` is rejected for `signAssetListing` itself: a listing is deliberately incomplete,
+so there is never anything to send.
 
 ### `getNetwork()`
 

@@ -49,6 +49,8 @@ interface PsbtPrompt {
   origin: string;
   account: string;
   summary: PsbtSummary;
+  /** The site asked the wallet to broadcast, not just sign. */
+  broadcast: boolean;
 }
 
 interface ListingPrompt {
@@ -197,7 +199,7 @@ function ConnectClient() {
   }, []);
 
   const requestSignPsbtApproval = useCallback(
-    async (origin: string, psbt: string, account: string) => {
+    async (origin: string, psbt: string, account: string, broadcast: boolean) => {
       // Decode the PSBT before showing the screen so the user sees exactly what they are signing.
       // A PSBT that will not even parse is rejected without a prompt.
       let summary: PsbtSummary;
@@ -209,7 +211,7 @@ function ConnectClient() {
       }
       return new Promise<boolean>((resolve) => {
         psbtResolverRef.current = resolve;
-        setPsbtPrompt({ origin, account, summary });
+        setPsbtPrompt({ origin, account, summary, broadcast });
       });
     },
     [walletService],
@@ -276,7 +278,7 @@ function ConnectClient() {
 
       requestSignPsbtApproval,
 
-      signPsbt: async (account: string, psbt: string) => {
+      signPsbt: async (account: string, psbt: string, broadcast: boolean) => {
         const wallet = await StorageService.getWalletByAddress(account);
         if (!wallet?.privateKey) {
           providerLogger.warn('No private key available for the requested account');
@@ -289,11 +291,15 @@ function ConnectClient() {
         );
         if (!auth.success) return null;
 
-        // Sign-only: return the updated PSBT. The wallet never broadcasts on a site's behalf.
         // Sign for the connected account, not the active wallet — they differ once the user
         // switches wallets, and the approval screen was scored against this account.
-        const signed = await walletService.signPsbt(psbt, auth.password, account);
-        return { psbt: signed.psbt, complete: signed.complete, signedInputs: signed.signedInputs };
+        if (!broadcast) {
+          const signed = await walletService.signPsbt(psbt, auth.password, account);
+          return { ...signed, broadcast: false };
+        }
+        // The user approved a broadcast: finalise and push when our signature completes it. A
+        // failure still returns the signature, so the site can retry or broadcast itself.
+        return await walletService.signAndBroadcastPsbt(psbt, auth.password, account);
       },
 
       requestSignAssetListingApproval,
@@ -675,6 +681,7 @@ function ConnectClient() {
         origin={psbtPrompt?.origin || ''}
         account={psbtPrompt?.account || ''}
         summary={psbtPrompt?.summary || null}
+        broadcast={psbtPrompt?.broadcast ?? false}
         onDecision={resolvePsbtPrompt}
       />
 

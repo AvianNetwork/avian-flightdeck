@@ -57,12 +57,23 @@ export interface ProviderHost {
    * Shows the origin and the decoded PSBT (what it moves, the fee, any asset) and resolves false
    * when the user declines. The account is the one the origin is connected with.
    */
-  requestSignPsbtApproval(origin: string, psbt: string, account: string): Promise<boolean>;
+  requestSignPsbtApproval(
+    origin: string,
+    psbt: string,
+    account: string,
+    /** True when the dApp asked the wallet to broadcast — a materially different consent. */
+    broadcast: boolean,
+  ): Promise<boolean>;
   /**
    * Authenticates the user and signs the wallet's inputs with Avian's FORKID sighash, returning the
    * updated PSBT. Resolves null when the user cancels authentication. Never broadcasts.
    */
-  signPsbt(account: string, psbt: string): Promise<SignPsbtResult | null>;
+  /**
+   * `broadcast` asks the wallet to finalise and push the transaction once its signature completes
+   * it, so the completing signer of a swap gets a txid and a history entry instead of the site
+   * having to own a broadcast path. A failed broadcast still returns the signature.
+   */
+  signPsbt(account: string, psbt: string, broadcast: boolean): Promise<SignPsbtResult | null>;
   /**
    * Shows what the listing sells and for how much, and resolves false when the user declines.
    * Separate from the PSBT screen because the decision is a sale, not a transfer.
@@ -243,13 +254,18 @@ export class ProviderService {
 
     // Remembering a site skips the connect screen only: every signature is approved explicitly,
     // and the approval screen decodes the PSBT so the user sees what they are signing.
-    const approved = await this.host.requestSignPsbtApproval(this.origin, parsedParams.psbt, account);
+    const approved = await this.host.requestSignPsbtApproval(
+      this.origin,
+      parsedParams.psbt,
+      account,
+      parsedParams.broadcast,
+    );
     if (!approved) {
       return makeError(id, 'USER_REJECTED', 'User rejected the PSBT signing request');
     }
 
     // The host performs requireAuth before touching the key; a cancelled prompt lands here.
-    const signed = await this.host.signPsbt(account, parsedParams.psbt);
+    const signed = await this.host.signPsbt(account, parsedParams.psbt, parsedParams.broadcast);
     if (!signed) {
       return makeError(id, 'USER_REJECTED', 'Authentication was cancelled');
     }

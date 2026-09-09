@@ -29,6 +29,8 @@ interface SignPsbtApprovalDialogProps {
   origin: string;
   account: string;
   summary: PsbtSummary | null;
+  /** The site asked the wallet to broadcast once signing completes the transaction. */
+  broadcast?: boolean;
   onDecision: (approved: boolean) => void;
 }
 
@@ -40,6 +42,7 @@ export default function SignPsbtApprovalDialog({
   origin,
   account,
   summary,
+  broadcast = false,
   onDecision,
 }: SignPsbtApprovalDialogProps) {
   const isMobile = useMediaQuery('(max-width: 768px)');
@@ -112,8 +115,18 @@ export default function SignPsbtApprovalDialog({
       <Alert className="border-caution/30 bg-caution/10 [&>svg]:text-caution">
         <AlertTriangle className="h-4 w-4" />
         <AlertDescription className="text-xs">
-          This site is asking you to sign a transaction that spends your coins. The wallet signs only
-          — it never broadcasts on the site&apos;s behalf. Check the amounts and fee before you sign.
+          {broadcast ? (
+            <>
+              This site is asking you to sign a transaction that spends your coins{' '}
+              <strong>and send it to the network</strong>. Once broadcast it cannot be recalled, so
+              check the amounts and fee before you approve.
+            </>
+          ) : (
+            <>
+              This site is asking you to sign a transaction that spends your coins. The wallet signs
+              only — the site broadcasts it. Check the amounts and fee before you sign.
+            </>
+          )}
         </AlertDescription>
       </Alert>
 
@@ -127,14 +140,16 @@ export default function SignPsbtApprovalDialog({
           disabled={!summary || summary.signableByUs === 0}
         >
           <FileSignature className="mr-2 h-4 w-4" />
-          Sign
+          {broadcast ? 'Sign and send' : 'Sign'}
         </Button>
       </div>
     </div>
   );
 
-  const title = 'Transaction signature request';
-  const description = 'A site is asking you to sign an Avian transaction (PSBT).';
+  const title = broadcast ? 'Send transaction request' : 'Transaction signature request';
+  const description = broadcast
+    ? 'A site is asking you to sign an Avian transaction (PSBT) and broadcast it.'
+    : 'A site is asking you to sign an Avian transaction (PSBT).';
 
   if (isMobile) {
     return (

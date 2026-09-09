@@ -111,10 +111,19 @@ export interface SignAssetListingResult {
 export interface SignPsbtResult {
   /** The base64 PSBT with this wallet's signatures added. */
   psbt: string;
-  /** Every input is now signed — the dApp can finalise and broadcast. */
+  /** Every input is now signed. */
   complete: boolean;
   /** How many inputs this wallet signed. */
   signedInputs: number;
+  /** Whether the wallet finalised and broadcast it. False unless `broadcast: true` was requested. */
+  broadcast: boolean;
+  /** Set when the wallet broadcast it. */
+  txid?: string;
+  /**
+   * Why a requested broadcast did not happen. The signature is still returned above, so the dApp
+   * can retry or broadcast itself — a marketplace race (someone took the listing first) lands here.
+   */
+  broadcastError?: string;
 }
 
 export interface NetworkResult {

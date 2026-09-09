@@ -950,12 +950,86 @@ export class WalletService {
         return result;
     }
 
-    /** Sign the active wallet's inputs, finalize, and broadcast. Returns the txid. */
-    async signAndBroadcastPsbt(psbtBase64: string, password?: string): Promise<string> {
-        const signed = await this.signPsbt(psbtBase64, password);
-        const { hex, txid } = this.finalizePsbt(signed.psbt);
-        await this.broadcastRawTransaction(hex);
-        return txid;
+    /**
+     * Sign this account's inputs and, when that completes the transaction, finalise and broadcast
+     * it — the completing signer of a swap, where leaving the push to somebody else means the
+     * wallet never learns the txid and the user sees nothing happen.
+     *
+     * Broadcasting is best-effort and never loses the signature: a failure comes back as
+     * `broadcast: false` with the reason, alongside the signed PSBT, so the caller can retry or
+     * hand it on. A marketplace race — another buyer taking the same listing first — surfaces here
+     * as a broadcast failure, because the asset UTXO it spends is already gone.
+     */
+    async signAndBroadcastPsbt(
+        psbtBase64: string,
+        password?: string,
+        account?: string,
+    ): Promise<{
+        psbt: string;
+        complete: boolean;
+        signedInputs: number;
+        txid?: string;
+        broadcast: boolean;
+        broadcastError?: string;
+    }> {
+        const signed = await this.signPsbt(psbtBase64, password, account);
+        if (!signed.complete) {
+            // Somebody else still has to sign; broadcasting now would be rejected outright.
+            return {
+                ...signed,
+                broadcast: false,
+                broadcastError: 'The transaction still needs other signatures',
+            };
+        }
+
+        try {
+            const { hex, txid } = this.finalizePsbt(signed.psbt);
+            await this.broadcastRawTransaction(hex);
+            await this.recordPsbtBroadcast(txid, signed.psbt, account);
+            return { ...signed, txid, broadcast: true };
+        } catch (error) {
+            walletLogger.warn('Broadcasting a signed PSBT failed:', error);
+            return {
+                ...signed,
+                broadcast: false,
+                broadcastError: error instanceof Error ? error.message : 'Broadcast failed',
+            };
+        }
+    }
+
+    /**
+     * Record a PSBT we broadcast in local history, so a swap shows up like any other spend rather
+     * than leaving the user staring at an unchanged wallet. Best-effort: the transaction is already
+     * on the network, so a storage failure must not be reported as a broadcast failure.
+     */
+    private async recordPsbtBroadcast(txid: string, psbtBase64: string, account?: string) {
+        try {
+            const address = account ?? (await StorageService.getActiveWallet())?.address;
+            if (!address) return;
+            const summary = await this.summarizePsbt(psbtBase64, address);
+            // What left this wallet, net of anything that came back to it.
+            const spent = summary.inputs
+                .filter((input) => input.isMine)
+                .reduce((sum, input) => sum + (input.value ?? 0), 0);
+            const returned = summary.outputs
+                .filter((output) => output.isMine)
+                .reduce((sum, output) => sum + output.value, 0);
+            const net = spent - returned;
+            const counterparty = summary.outputs.find((output) => !output.isMine && output.address);
+
+            await StorageService.saveTransaction({
+                txid,
+                amount: Math.abs(net) / 100000000,
+                address: counterparty?.address ?? address,
+                fromAddress: address,
+                walletAddress: address,
+                type: net >= 0 ? 'send' : 'receive',
+                timestamp: new Date(),
+                confirmations: 0,
+            });
+        } catch (error) {
+            walletLogger.warn('Could not record a broadcast PSBT in history:', error);
+        }
     }
 
     /**

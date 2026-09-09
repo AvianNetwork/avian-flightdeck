@@ -116,8 +116,24 @@ describe('parseSignMessageParams', () => {
 describe('parseSignPsbtParams', () => {
   const PSBT = 'cHNidP8BAAoAAAAAAAAAAAAA'; // base64-charset placeholder
 
-  it('returns the psbt', () => {
-    expect(parseSignPsbtParams({ psbt: PSBT })).toEqual({ ok: true, psbt: PSBT });
+  it('returns the psbt, with broadcasting off unless asked for', () => {
+    expect(parseSignPsbtParams({ psbt: PSBT })).toEqual({ ok: true, psbt: PSBT, broadcast: false });
+    expect(parseSignPsbtParams({ psbt: PSBT, broadcast: true })).toEqual({
+      ok: true,
+      psbt: PSBT,
+      broadcast: true,
+    });
+  });
+
+  it('rejects a non-boolean broadcast flag', () => {
+    expect(parseSignPsbtParams({ psbt: PSBT, broadcast: 'yes' }).ok).toBe(false);
+    expect(parseSignPsbtParams({ psbt: PSBT, broadcast: 1 }).ok).toBe(false);
+  });
+
+  it('refuses to broadcast a listing, which is never a complete transaction', () => {
+    const result = parseSignPsbtParams({ psbt: PSBT, broadcast: true }, 'signAssetListing');
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.error.message).toMatch(/cannot broadcast/);
   });
 
   it('rejects a missing, empty or non-string psbt', () => {
