@@ -8,10 +8,98 @@ import type { ElectrumService, AssetMeta } from '@/services/core/ElectrumService
 /** Avian's IPFS gateway, for rendering an asset's image from its IPFS hash. */
 export const IPFS_GATEWAY = 'https://ipfs.avn.network/ipfs/';
 
-/** URL for an asset's IPFS content (image), or null if it has none. */
+/** URL for an asset's IPFS content, or null if it has none. */
 export function ipfsImageUrl(hash: string | null | undefined): string | null {
   // Only IPFS v0 CIDs (Qm…) are real content here; a txid reference isn't an image.
   return hash && hash.startsWith('Qm') ? `${IPFS_GATEWAY}${hash}` : null;
+}
+
+/** What an asset's IPFS hash resolves to, once we know whether it is an image or metadata. */
+export interface AssetMedia {
+  /** Image to render, or null when the hash holds neither an image nor usable metadata. */
+  imageUrl: string | null;
+  /** Display name from metadata, e.g. "Runed Grips". */
+  name?: string;
+  description?: string;
+}
+
+/**
+ * Turn a metadata `image` value into something safe to put in an `<img src>`.
+ *
+ * The metadata is attacker-controlled — anyone can mint an asset whose JSON points anywhere — so
+ * only `https:` and `ipfs:` are accepted. That rules out `javascript:`, `data:` (a vector for
+ * oversized or mislabelled payloads) and plaintext `http:`.
+ */
+export function resolveMediaUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || !value) return null;
+  if (value.startsWith('ipfs://')) return `${IPFS_GATEWAY}${value.slice('ipfs://'.length)}`;
+  try {
+    return new URL(value).protocol === 'https:' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Largest metadata document we will read; real ones are a few hundred bytes. */
+const MAX_METADATA_BYTES = 64 * 1024;
+
+const mediaCache = new Map<string, Promise<AssetMedia>>();
+
+/**
+ * Resolve an asset's IPFS hash to something renderable.
+ *
+ * An asset's IPFS content is either the image itself (the original Ravencoin convention) or a JSON
+ * metadata document pointing at one — which is what REALM mints:
+ *
+ *   { "name": "Runed Grips", "image": "https://…/grips.webp", … }
+ *
+ * Both are common on-chain, and the hash alone does not say which, so this looks at the response's
+ * content type: images are handed back as the gateway URL (the browser fetches them once, for the
+ * `<img>`), and anything else is parsed as metadata.
+ *
+ * Failures are not errors — an unreachable gateway or an unreadable document simply means no image.
+ * Results are cached per hash for the session, since asset content is immutable.
+ */
+export async function resolveAssetMedia(hash: string | null | undefined): Promise<AssetMedia> {
+  const url = ipfsImageUrl(hash);
+  if (!url || !hash) return { imageUrl: null };
+
+  const cached = mediaCache.get(hash);
+  if (cached) return cached;
+
+  const pending = (async (): Promise<AssetMedia> => {
+    try {
+      const controller = new AbortController();
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) return { imageUrl: null };
+
+      const contentType = response.headers.get('content-type') ?? '';
+      if (contentType.startsWith('image/')) {
+        // Stop the download: the <img> below will fetch it properly (and stream it).
+        controller.abort();
+        return { imageUrl: url };
+      }
+
+      const body = await response.text();
+      if (body.length > MAX_METADATA_BYTES) return { imageUrl: null };
+
+      const meta: unknown = JSON.parse(body);
+      if (!meta || typeof meta !== 'object') return { imageUrl: null };
+
+      const record = meta as Record<string, unknown>;
+      return {
+        imageUrl: resolveMediaUrl(record.image),
+        name: typeof record.name === 'string' ? record.name : undefined,
+        description: typeof record.description === 'string' ? record.description : undefined,
+      };
+    } catch {
+      // Offline, CORS-blocked, not JSON — all the same to the caller: nothing to show.
+      return { imageUrl: null };
+    }
+  })();
+
+  mediaCache.set(hash, pending);
+  return pending;
 }
 
 export interface HeldAsset {

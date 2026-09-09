@@ -4,7 +4,12 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Coins, Plus, PlusCircle, RefreshCw, Search, Send } from 'lucide-react';
 
 import { useWallet } from '@/contexts/WalletContext';
-import { getHeldAssets, ipfsImageUrl, type HeldAsset } from '@/services/wallet/AssetService';
+import {
+  getHeldAssets,
+  resolveAssetMedia,
+  type AssetMedia,
+  type HeldAsset,
+} from '@/services/wallet/AssetService';
 import { isAssetIssuanceEnabled, ASSET_ISSUANCE_DISABLED_MESSAGE } from '@/lib/featureFlags';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -15,10 +20,37 @@ import SendAssetDialog from './SendAssetDialog';
 import CreateAssetDialog from './CreateAssetDialog';
 import ReissueAssetDialog from './ReissueAssetDialog';
 
-/** A small asset avatar: the IPFS image when the asset has one (click to enlarge), else a coin glyph. */
-function AssetThumbnail({ asset, onPreview }: { asset: HeldAsset; onPreview: (url: string) => void }) {
+/**
+ * A small asset avatar: the asset's image when it has one (click to enlarge), else a coin glyph.
+ *
+ * The IPFS hash may be the image itself or a JSON document pointing at one, so the URL is resolved
+ * asynchronously rather than being handed straight to `<img>`.
+ */
+function AssetThumbnail({
+  asset,
+  onPreview,
+}: {
+  asset: HeldAsset;
+  onPreview: (url: string, title: string) => void;
+}) {
   const [failed, setFailed] = useState(false);
-  const url = asset.meta?.hasIpfs ? ipfsImageUrl(asset.meta.ipfs) : null;
+  const [media, setMedia] = useState<AssetMedia | null>(null);
+
+  useEffect(() => {
+    let current = true;
+    if (!asset.meta?.hasIpfs) {
+      setMedia({ imageUrl: null });
+      return;
+    }
+    void resolveAssetMedia(asset.meta.ipfs).then((resolved) => {
+      if (current) setMedia(resolved);
+    });
+    return () => {
+      current = false;
+    };
+  }, [asset.meta?.hasIpfs, asset.meta?.ipfs]);
+
+  const url = media?.imageUrl ?? null;
 
   if (!url || failed) {
     return (
@@ -30,17 +62,18 @@ function AssetThumbnail({ asset, onPreview }: { asset: HeldAsset; onPreview: (ur
   return (
     <button
       type="button"
-      onClick={() => onPreview(url)}
+      onClick={() => onPreview(url, media?.name || asset.name)}
       className="h-9 w-9 flex-shrink-0 overflow-hidden rounded-md"
-      aria-label={`View ${asset.name} image`}
+      aria-label={`View ${media?.name || asset.name} image`}
     >
-      {/* Plain <img> (not next/image) — external IPFS content, lazily loaded, hidden gracefully if
-          the hash isn't an image or the gateway fails. */}
+      {/* Plain <img> (not next/image) — external content, lazily loaded, hidden gracefully if the
+          host is unreachable. no-referrer keeps the wallet's page out of the image host's logs. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={url}
         alt=""
         loading="lazy"
+        referrerPolicy="no-referrer"
         onError={() => setFailed(true)}
         className="h-full w-full object-cover"
       />
@@ -181,7 +214,7 @@ export function AssetList({ className }: { className?: string }) {
                 >
                   <AssetThumbnail
                     asset={asset}
-                    onPreview={(url) => setPreview({ url, name: asset.name })}
+                    onPreview={(url, title) => setPreview({ url, name: title })}
                   />
                   <span className="flex min-w-0 flex-1 flex-col">
                     <span className="truncate font-medium">{asset.name}</span>
@@ -276,6 +309,7 @@ export function AssetList({ className }: { className?: string }) {
             <img
               src={preview.url}
               alt={preview.name}
+              referrerPolicy="no-referrer"
               className="mx-auto max-h-[80vh] w-auto max-w-full rounded-md object-contain"
             />
           )}
