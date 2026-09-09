@@ -279,6 +279,24 @@ export class WalletService {
         this.electrum = electrumService || new ElectrumService();
     }
 
+    /**
+     * Point this service at an already-connected ElectrumService.
+     *
+     * Callers that construct a WalletService before the app's connection exists — the Avian Connect
+     * page does, since it is created on mount — must attach it once it does, or every network-bound
+     * method talks to an ElectrumService that was never connected.
+     */
+    attachElectrum(electrumService: ElectrumService) {
+        this.electrum = electrumService;
+    }
+
+    /** Throws unless we can actually reach the network, so callers do not misread silence as data. */
+    private requireConnection() {
+        if (!this.electrum.isConnectedToServer()) {
+            throw new Error('Not connected to the Avian network');
+        }
+    }
+
     async generateWallet(
         password: string,
         useMnemonic: boolean = true,
@@ -756,6 +774,8 @@ export class WalletService {
             throw new Error('The listing price must be a positive whole number of satoshis');
         }
 
+        this.requireConnection();
+
         const address = params.account ?? (await StorageService.getActiveWallet())?.address;
         if (!address) throw new Error('No account to list this asset from');
 
@@ -840,6 +860,8 @@ export class WalletService {
         pricePaidSats: number;
         feeSats: number;
     }> {
+        this.requireConnection();
+
         const psbt = bitcoin.Psbt.fromBase64(params.listingPsbt, { network: avianNetwork });
         const listing = this.inspectSellerListing(psbt);
 

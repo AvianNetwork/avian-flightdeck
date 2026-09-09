@@ -527,3 +527,65 @@ describe('what Core does that we have to match', () => {
     expect(tx.ins[0].sequence).toBe(0xfffffffe);
   });
 });
+
+describe('a wallet that cannot reach the network', () => {
+  /** The connect page builds its WalletService on mount, before any connection exists. */
+  const offline = () =>
+    new WalletService({
+      isConnectedToServer: () => false,
+      // Present but unusable: getAssetUTXOs swallows its own failures and answers with [].
+      getAssetUTXOs: vi.fn(async () => []),
+      getUTXOs: vi.fn(async () => []),
+    } as never);
+
+  it('says it is offline rather than that you hold no such asset', async () => {
+    const seller = await createWallet('Seller', true);
+
+    await expect(
+      offline().createAssetListing({
+        assetName: ASSET,
+        priceSats: PRICE,
+        password: TEST_PASSWORD,
+        account: seller.address,
+      }),
+    ).rejects.toThrow(/Not connected/);
+  });
+
+  it('refuses to complete a purchase it cannot fund or broadcast', async () => {
+    const seller = await createWallet('Seller');
+    const buyer = await createWallet('Buyer', true);
+    const market = marketElectrum(seller.address, ASSET, 100_000_000n, buyer.address, [
+      600 * 100_000_000,
+    ]);
+    const listing = await new WalletService(market.electrum as never).createAssetListing({
+      assetName: ASSET,
+      priceSats: PRICE,
+      password: TEST_PASSWORD,
+      account: seller.address,
+    });
+
+    await expect(
+      offline().completeAssetListing({
+        listingPsbt: listing.psbt,
+        password: TEST_PASSWORD,
+        account: buyer.address,
+      }),
+    ).rejects.toThrow(/Not connected/);
+  });
+
+  it('picks up the connection once the app has one', async () => {
+    const seller = await createWallet('Seller', true);
+    const market = marketElectrum(seller.address, ASSET, 100_000_000n);
+    const service = offline();
+
+    service.attachElectrum(market.electrum as never);
+
+    const listing = await service.createAssetListing({
+      assetName: ASSET,
+      priceSats: PRICE,
+      password: TEST_PASSWORD,
+      account: seller.address,
+    });
+    expect(listing.assetName).toBe(ASSET);
+  });
+});
