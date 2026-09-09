@@ -76,6 +76,13 @@ function ConnectClient() {
   const { requireAuth } = useSecurity();
 
   const [walletService] = useState(() => new WalletService());
+
+  // The service is created on mount, before the app's ElectrumService exists. Signing needs no
+  // network, but building a listing or completing a purchase reads UTXOs and broadcasts — so point
+  // it at the live connection as soon as there is one.
+  useEffect(() => {
+    if (electrum) walletService.attachElectrum(electrum);
+  }, [electrum, walletService]);
   const [transport, setTransport] = useState<Transport>('idle');
   const [status, setStatus] = useState<string>('Waiting for the site to send a request…');
   const [fatalError, setFatalError] = useState<string | null>(null);
