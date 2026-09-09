@@ -611,6 +611,16 @@ export class WalletService {
         return null;
     }
 
+    /** Whether an address is a legacy P2PKH (R…), the only kind an asset output can pay. */
+    private isLegacyAddressCheck(address: string): boolean {
+        try {
+            const script = bitcoin.address.toOutputScript(address, avianNetwork);
+            return script.length === 25 && script[0] === bitcoin.opcodes.OP_DUP;
+        } catch {
+            return false;
+        }
+    }
+
     private scriptToAddress(script: Buffer): string | null {
         try {
             return bitcoin.address.fromOutputScript(script, avianNetwork);
@@ -837,6 +847,13 @@ export class WalletService {
         if (!address) throw new Error('No account to buy with');
         if (listing.payTo === address) {
             throw new Error('This is your own listing — cancel it instead of buying it');
+        }
+        // Asset scripts wrap a legacy P2PKH, so an asset cannot be paid to a bech32 address. Fail
+        // here rather than after selecting UTXOs, and say what the user has to do about it.
+        if (!this.isLegacyAddressCheck(address)) {
+            throw new Error(
+                'Assets can only be received at a legacy (R…) address — buy from a legacy account',
+            );
         }
 
         const satPerVByte = await this.resolveFeeRate(params.feeRate);

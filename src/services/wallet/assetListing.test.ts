@@ -460,3 +460,70 @@ describe('completeAssetListing', () => {
     ).rejects.toThrow(/not signed by the seller/);
   });
 });
+
+describe('what Core does that we have to match', () => {
+  it('refuses to buy into a bech32 account, since an asset cannot be paid there', async () => {
+    // Core mixes a native-SegWit funding input with a legacy asset input happily, but the asset
+    // output itself is always a legacy P2PKH — there is no bech32 form of an asset script.
+    const seller = await createWallet('Seller');
+    const buyerKey = ECPair.makeRandom({ network: avianNetwork });
+    const buyerAddress = deriveAddress(Buffer.from(buyerKey.publicKey), 'p2wpkh');
+    await StorageService.createWallet({
+      name: 'SegWit buyer',
+      address: buyerAddress,
+      privateKey: await secureEncrypt(buyerKey.toWIF(), TEST_PASSWORD),
+      isEncrypted: true,
+      addressType: 'p2wpkh',
+      makeActive: true,
+    });
+
+    const market = marketElectrum(seller.address, ASSET, 100_000_000n, buyerAddress, [
+      600 * 100_000_000,
+    ]);
+    const w = new WalletService(market.electrum as never);
+    const listing = await w.createAssetListing({
+      assetName: ASSET,
+      priceSats: PRICE,
+      password: TEST_PASSWORD,
+      account: seller.address,
+    });
+
+    await expect(
+      w.completeAssetListing({
+        listingPsbt: listing.psbt,
+        password: TEST_PASSWORD,
+        account: buyerAddress,
+      }),
+    ).rejects.toThrow(/legacy \(R…\) address/);
+  });
+
+  it('leaves the locktime alone, because the seller signed over it', async () => {
+    // Core sets locktime to the current height for anti-fee-sniping. A listing cannot: the
+    // seller's signature commits to nLockTime, so a buyer changing it would void the signature.
+    const seller = await createWallet('Seller');
+    const buyer = await createWallet('Buyer', true);
+    const market = marketElectrum(seller.address, ASSET, 100_000_000n, buyer.address, [
+      600 * 100_000_000,
+    ]);
+    const w = new WalletService(market.electrum as never);
+
+    const listing = await w.createAssetListing({
+      assetName: ASSET,
+      priceSats: PRICE,
+      password: TEST_PASSWORD,
+      account: seller.address,
+    });
+    expect(bitcoin.Psbt.fromBase64(listing.psbt, { network: avianNetwork }).locktime).toBe(0);
+
+    await w.completeAssetListing({
+      listingPsbt: listing.psbt,
+      password: TEST_PASSWORD,
+      account: buyer.address,
+    });
+
+    const tx = bitcoin.Transaction.fromHex(market.broadcast.mock.calls[0][0] as string);
+    expect(tx.locktime).toBe(0);
+    // Sequence is likewise fixed by the seller's signature — the same 0xFFFFFFFE Core uses.
+    expect(tx.ins[0].sequence).toBe(0xfffffffe);
+  });
+});
