@@ -96,8 +96,8 @@ function ConnectClient() {
   const [psbtPrompt, setPsbtPrompt] = useState<PsbtPrompt | null>(null);
   const [listingPrompt, setListingPrompt] = useState<ListingPrompt | null>(null);
   const [buyPrompt, setBuyPrompt] = useState<BuyPrompt | null>(null);
-  /** A "use a different wallet" click, waiting for the approval dialog to finish closing. */
-  const [pendingSwitch, setPendingSwitch] = useState(false);
+  /** True while the account picker is up in place of a still-unanswered approval. */
+  const [switching, setSwitching] = useState(false);
   const [completed, setCompleted] = useState<{ origin: string; method: string } | null>(null);
 
   // Live values the (stable) provider host closures read from.
@@ -285,12 +285,8 @@ function ConnectClient() {
    * the address `connect` gave it. Instead the grant is moved, `accountsChanged` is emitted, and
    * the site can ask again — now against the wallet the user actually wants.
    */
-  const switchAccount = useCallback(() => {
-    if (!pinnedOriginRef.current) return;
-
-    // Decline whichever approval is open. The picker cannot be opened in the same commit — a
-    // closing dialog leaves the page inert through its exit transition, and the second dialog
-    // never appears — so the effect below waits for this one to actually be gone.
+  /** Decline whichever approval is waiting, and clear it. */
+  const declinePendingApproval = useCallback(() => {
     for (const ref of [signResolverRef, psbtResolverRef, listingResolverRef, buyResolverRef]) {
       const resolver = ref.current;
       ref.current = null;
@@ -300,26 +296,41 @@ function ConnectClient() {
     setPsbtPrompt(null);
     setListingPrompt(null);
     setBuyPrompt(null);
-    setStatus('Choosing a different wallet…');
-    setPendingSwitch(true);
   }, []);
 
-  // Second half of the switch: open the account picker once the approval dialog has closed.
+  /**
+   * Sign with a different wallet than the one this site is connected with.
+   *
+   * The pending request must stay unanswered until the new wallet is chosen. Answering ends the
+   * session — the redirect transport navigates away, and a popup is usually closed by the dApp the
+   * moment it has a response — so a rejection sent first takes the picker down with it.
+   *
+   * So the approval is only hidden here. Once a wallet is picked the grant moves, `accountsChanged`
+   * goes out, and only then is the request declined, leaving the site to ask again against the
+   * wallet the user actually wants. Dismissing the picker puts the original approval back.
+   */
+  const switchAccount = useCallback(() => {
+    if (!pinnedOriginRef.current) return;
+    setSwitching(true);
+    setStatus('Choosing a different wallet…');
+  }, []);
+
   useEffect(() => {
-    if (!pendingSwitch) return;
-    if (signPrompt || psbtPrompt || listingPrompt || buyPrompt) return;
+    if (!switching) return;
 
     const origin = pinnedOriginRef.current;
     if (!origin) {
-      setPendingSwitch(false);
+      setSwitching(false);
       return;
     }
 
-    // One frame after the close commits is not enough on its own: Radix keeps the body
-    // pointer-events-none until the exit animation ends, so give it that long.
+    // The approval dialog is on its way out; a Radix dialog keeps the page inert through its exit
+    // transition, so let it finish before mounting the picker.
     const timer = setTimeout(() => {
       connectResolverRef.current = async (decision: ConnectApprovalDecision) => {
         if (!decision.approved || decision.accounts.length === 0) {
+          // Nothing chosen: put the original approval back rather than answering for the user.
+          setSwitching(false);
           setStatus('Waiting for the site to send a request…');
           return;
         }
@@ -332,13 +343,15 @@ function ConnectClient() {
           providerLogger.error('Failed to switch the connected account:', error);
           setStatus('Could not switch wallet. Try again from the site.');
         }
+        // Answer last: this is what closes the popup or redirects away.
+        setSwitching(false);
+        declinePendingApproval();
       };
       setConnectPromptOrigin(origin);
-      setPendingSwitch(false);
     }, 250);
 
     return () => clearTimeout(timer);
-  }, [pendingSwitch, signPrompt, psbtPrompt, listingPrompt, buyPrompt, emit]);
+  }, [switching, emit, declinePendingApproval]);
 
   const host = useMemo<ProviderHost>(
     () => ({
@@ -800,7 +813,7 @@ function ConnectClient() {
 
       <SignMessageApprovalDialog
         onSwitchAccount={accounts.length > 1 ? switchAccount : undefined}
-        open={signPrompt !== null}
+        open={signPrompt !== null && !switching}
         origin={signPrompt?.origin || ''}
         account={signPrompt?.account || ''}
         message={signPrompt?.message || ''}
@@ -809,7 +822,7 @@ function ConnectClient() {
 
       <SignPsbtApprovalDialog
         onSwitchAccount={accounts.length > 1 ? switchAccount : undefined}
-        open={psbtPrompt !== null}
+        open={psbtPrompt !== null && !switching}
         origin={psbtPrompt?.origin || ''}
         account={psbtPrompt?.account || ''}
         summary={psbtPrompt?.summary || null}
@@ -819,7 +832,7 @@ function ConnectClient() {
 
       <SignAssetListingApprovalDialog
         onSwitchAccount={accounts.length > 1 ? switchAccount : undefined}
-        open={listingPrompt !== null}
+        open={listingPrompt !== null && !switching}
         origin={listingPrompt?.origin || ''}
         account={listingPrompt?.account || ''}
         assetName={listingPrompt?.assetName || ''}
@@ -829,7 +842,7 @@ function ConnectClient() {
 
       <BuyAssetApprovalDialog
         onSwitchAccount={accounts.length > 1 ? switchAccount : undefined}
-        open={buyPrompt !== null}
+        open={buyPrompt !== null && !switching}
         origin={buyPrompt?.origin || ''}
         account={buyPrompt?.account || ''}
         listing={buyPrompt?.listing || null}

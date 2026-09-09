@@ -455,8 +455,14 @@ remembered — that is what "remember this site" buys. But a user with several w
 be asked to sign with the wrong one, and revoking the site just to switch is a poor answer.
 
 Every approval screen therefore offers **Use a different wallet** when more than one exists. Taking
-it **rejects the pending request** with `USER_REJECTED`, moves the grant to the chosen account, and
-emits `accountsChanged`. The site should re-read the account and ask again.
+it hides the approval, shows the account picker, moves the grant to the chosen account, emits
+`accountsChanged`, and only then **rejects the pending request** with `USER_REJECTED`. The site
+should re-read the account and ask again.
+
+That order matters: answering a request ends the wallet session — the redirect transport navigates
+back to the dApp, and a popup is usually closed by the dApp as soon as it has a response — so a
+rejection sent before the picker would take the picker down with it. Dismissing the picker without
+choosing puts the original approval back, unanswered.
 
 The request is rejected rather than quietly re-pointed at the new wallet: the site asked a specific
 account to sign, and a signature from a different one would fail whatever check it does against the
