@@ -168,8 +168,11 @@ broadcasts** on a site's behalf — the dApp finalises and broadcasts (or hands 
 another signer). `complete` is true when every input is now signed; `signedInputs` is how many
 this wallet added.
 
-Asset inputs are **never** signed (spending an Avian asset as a bare transfer would burn it), and
-they are surfaced in the approval screen.
+Asset inputs are **never** signed here (spending an Avian asset as a bare transfer would burn it),
+and they are surfaced in the approval screen. Selling an asset has its own method,
+[`signAssetListing`](#signassetlistingpsbt), whose sighash bounds what the signature can authorise;
+a `SIGHASH_ALL` signature over a site-supplied transaction carries no such guarantee, which is why
+this method stays closed to assets.
 
 Requires an existing permission, an explicit per-request approval screen that **decodes the PSBT**
 — showing each input and output, the total moved, the network fee, any asset, and how many inputs
@@ -177,6 +180,53 @@ the wallet will sign — and wallet authentication. There is no way to pre-appro
 that does not parse is rejected without a prompt. The wallet does not select inputs or set the fee
 for `signPsbt`; it signs exactly the transaction the dApp presents, so the dApp is responsible for
 building a correct PSBT (see the wallet's own unsigned-PSBT export for the format).
+
+### `signAssetListing({ psbt })`
+
+- **params**: `{ psbt: string }` — a base64 PSBT (BIP174), at most 100000 characters
+- **result**: `{ psbt: string, assetName: string, assetAmount: string, priceSats: number, payTo: string }`
+
+**Sells an asset.** This is the one method that signs an asset input, and it does so with
+`SIGHASH_SINGLE | SIGHASH_FORKID | SIGHASH_ANYONECANPAY` (`0xc3`) — the marketplace listing
+sighash. SINGLE commits to the output at the signed input's index; ANYONECANPAY commits to that
+input alone. The seller therefore commits to exactly *"I spend this asset UTXO and I am paid this
+amount"*, and a buyer can add payment inputs, an asset destination and change without invalidating
+the signature.
+
+That bound is the whole safety argument, so the wallet enforces the shape it depends on. The PSBT
+must be **exactly one input and one output**:
+
+```
+input[0]   the seller's asset UTXO, with its prevout data (nonWitnessUtxo)
+output[0]  the payment, paying the connected account
+```
+
+Anything else is refused rather than partially signed:
+
+| Refused when | Why |
+| --- | --- |
+| more than one input or output | uncommitted structure the user was never shown |
+| `input[0]` is not an asset | this method exists only to sell assets; use `signPsbt` |
+| `input[0]` is not held by the connected account | not the seller's to sell |
+| `output[0]` pays anyone but the connected account | the signature commits to this output alone, so paying elsewhere signs the asset away for nothing |
+| `output[0]` is zero or negative | not a sale |
+| the input is already signed | listings are signed once |
+| the prevout data is missing | the asset and its owner cannot be verified |
+
+`assetAmount` is `10^8`-scaled and returned as a **decimal string**, because JSON has no bigint.
+The returned PSBT has `input[0]` signed *and finalised* — Avian Core cannot decode a FORKID
+`partial_sig`, so a listing that is passed around before a buyer combines it must carry a
+`final_scriptsig`.
+
+The signature commits to `input[0]`'s sequence, so a buyer must preserve it when combining.
+
+Requires an existing permission, wallet authentication, and an explicit approval screen showing the
+asset, the quantity, the price and the paying address. Remembering a site never covers a sale:
+every listing is approved individually.
+
+**Buyers** need no new method. Once a seller-signed listing is combined with the buyer's payment
+inputs and outputs, `signPsbt` signs the buyer's own inputs with `SIGHASH_ALL | SIGHASH_FORKID` and
+leaves the seller's finalised input untouched.
 
 ### `getNetwork()`
 

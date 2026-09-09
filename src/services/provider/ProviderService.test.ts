@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { OriginPermission, SignPsbtResult } from '@/types/avianConnect';
+import {
+  OriginPermission,
+  SignAssetListingResult,
+  SignPsbtResult,
+} from '@/types/avianConnect';
 import { grantPermission, revokePermission, touchPermission } from './permissions';
 // vi.mock below is hoisted above this import, so ProviderService picks up the stub.
 import { ProviderService } from './ProviderService';
@@ -36,6 +40,13 @@ const SIGNATURE = 'H9base64signature==';
 // Base64-charset placeholder; the host is mocked so the bytes never get decoded.
 const PSBT = 'cHNidP8BAAoAAAAAAAAAAAAA';
 const SIGNED_PSBT: SignPsbtResult = { psbt: PSBT, complete: true, signedInputs: 1 };
+const SIGNED_LISTING: SignAssetListingResult = {
+  psbt: PSBT,
+  assetName: 'RLM#BRBAEY6A94VXQ',
+  assetAmount: '100000000',
+  priceSats: 500 * 100_000_000,
+  payTo: ADDRESS,
+};
 
 const createHost = (overrides: Partial<ReturnType<typeof baseHost>> = {}) => ({
   ...baseHost(),
@@ -54,6 +65,8 @@ function baseHost() {
     signMessage: vi.fn(async () => SIGNATURE as string | null),
     requestSignPsbtApproval: vi.fn(async () => true),
     signPsbt: vi.fn(async () => SIGNED_PSBT as SignPsbtResult | null),
+    requestSignAssetListingApproval: vi.fn(async () => true),
+    signAssetListing: vi.fn(async () => SIGNED_LISTING as SignAssetListingResult | null),
     getPublicKey: vi.fn(async () => undefined as string | undefined),
     getNetwork: vi.fn(async () => ({ network: 'mainnet' as const, genesisHash: null })),
     emit: vi.fn(),
@@ -308,6 +321,75 @@ describe('signMessage', () => {
 
     const response = await provider.handle(request('signMessage', { message: 'hi' }));
     expect(response.error?.code).toBe('ORIGIN_NOT_APPROVED');
+  });
+});
+
+describe('signAssetListing', () => {
+  const connectFirst = async (host: ReturnType<typeof baseHost>) => {
+    const provider = new ProviderService(ORIGIN, host);
+    await provider.handle(request('connect'));
+    return provider;
+  };
+
+  it('requires a permission', async () => {
+    const host = createHost();
+    const response = await new ProviderService(ORIGIN, host).handle(
+      request('signAssetListing', { psbt: PSBT }),
+    );
+
+    expect(response.error?.code).toBe('ORIGIN_NOT_APPROVED');
+    expect(host.signAssetListing).not.toHaveBeenCalled();
+  });
+
+  it('reports WALLET_LOCKED before anything else', async () => {
+    const host = createHost();
+    const provider = await connectFirst(host);
+    host.isLocked.mockReturnValue(true);
+
+    const response = await provider.handle(request('signAssetListing', { psbt: PSBT }));
+
+    expect(response.error?.code).toBe('WALLET_LOCKED');
+    expect(host.signAssetListing).not.toHaveBeenCalled();
+  });
+
+  it('always shows the approval screen — remembering a site never covers selling an asset', async () => {
+    const host = createHost();
+    const provider = await connectFirst(host);
+
+    const response = await provider.handle(request('signAssetListing', { psbt: PSBT }));
+
+    expect(host.requestSignAssetListingApproval).toHaveBeenCalledWith(ORIGIN, PSBT, ADDRESS);
+    expect(response.result).toEqual(SIGNED_LISTING);
+  });
+
+  it('never signs when the user rejects the listing', async () => {
+    const host = createHost({ requestSignAssetListingApproval: vi.fn(async () => false) });
+    const provider = await connectFirst(host);
+
+    const response = await provider.handle(request('signAssetListing', { psbt: PSBT }));
+
+    expect(response.error?.code).toBe('USER_REJECTED');
+    expect(host.signAssetListing).not.toHaveBeenCalled();
+  });
+
+  it('reports a cancelled authentication as a rejection', async () => {
+    const host = createHost({ signAssetListing: vi.fn(async () => null) });
+    const provider = await connectFirst(host);
+
+    const response = await provider.handle(request('signAssetListing', { psbt: PSBT }));
+
+    expect(response.error?.code).toBe('USER_REJECTED');
+  });
+
+  it('rejects a missing or malformed psbt without prompting', async () => {
+    const host = createHost();
+    const provider = await connectFirst(host);
+
+    for (const params of [undefined, { psbt: '' }, { psbt: 'not base64!' }]) {
+      const response = await provider.handle(request('signAssetListing', params));
+      expect(response.error?.code).toBe('INVALID_REQUEST');
+    }
+    expect(host.requestSignAssetListingApproval).not.toHaveBeenCalled();
   });
 });
 

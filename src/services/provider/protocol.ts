@@ -112,12 +112,16 @@ export function parseSignMessageParams(
 /** Extracts and bounds-checks the `psbt` param of signPsbt (a base64 string). */
 export function parseSignPsbtParams(
   params: Record<string, unknown> | undefined,
+  method: 'signPsbt' | 'signAssetListing' = 'signPsbt',
 ): { ok: true; psbt: string } | { ok: false; error: ConnectError } {
   const psbt = params?.psbt;
   if (typeof psbt !== 'string' || psbt.length === 0) {
     return {
       ok: false,
-      error: { code: 'INVALID_REQUEST', message: 'signPsbt requires a non-empty base64 psbt string' },
+      error: {
+        code: 'INVALID_REQUEST',
+        message: `${method} requires a non-empty base64 psbt string`,
+      },
     };
   }
   if (psbt.length > LIMITS.psbt) {
@@ -131,7 +135,7 @@ export function parseSignPsbtParams(
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(psbt)) {
     return {
       ok: false,
-      error: { code: 'INVALID_REQUEST', message: 'signPsbt psbt must be valid base64' },
+      error: { code: 'INVALID_REQUEST', message: `${method} psbt must be valid base64` },
     };
   }
   return { ok: true, psbt };

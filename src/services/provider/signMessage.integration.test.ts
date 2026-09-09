@@ -53,7 +53,9 @@ describe('signMessage over Avian Connect', () => {
       signPsbt: async () => null,
       getPublicKey: async () => undefined,
       getNetwork: async () => ({ network: 'mainnet', genesisHash: null }),
-      emit: () => undefined,
+      requestSignAssetListingApproval: async () => true,
+    signAssetListing: async () => null,
+    emit: () => undefined,
     };
 
     const provider = new ProviderService(ORIGIN, host);

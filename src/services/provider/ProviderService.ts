@@ -17,6 +17,7 @@ import {
   OriginPermission,
   SignMessageResult,
   SignPsbtResult,
+  SignAssetListingResult,
 } from '@/types/avianConnect';
 import { providerLogger } from '@/lib/Logger';
 import { PermissionService } from './PermissionService';
@@ -62,6 +63,17 @@ export interface ProviderHost {
    * updated PSBT. Resolves null when the user cancels authentication. Never broadcasts.
    */
   signPsbt(account: string, psbt: string): Promise<SignPsbtResult | null>;
+  /**
+   * Shows what the listing sells and for how much, and resolves false when the user declines.
+   * Separate from the PSBT screen because the decision is a sale, not a transfer.
+   */
+  requestSignAssetListingApproval(origin: string, psbt: string, account: string): Promise<boolean>;
+  /**
+   * Authenticates the user and signs the seller's asset input with SINGLE|FORKID|ANYONECANPAY.
+   * Resolves null when the user cancels authentication, and throws when the PSBT is not a listing
+   * this account can safely sign.
+   */
+  signAssetListing(account: string, psbt: string): Promise<SignAssetListingResult | null>;
   getPublicKey(account: string): Promise<string | undefined>;
   getNetwork(): Promise<NetworkResult>;
   emit(event: ConnectEventName, data: unknown): void;
@@ -102,6 +114,8 @@ export class ProviderService {
           return await this.getAccounts(id);
         case 'signMessage':
           return await this.signMessage(id, params);
+        case 'signAssetListing':
+          return await this.signAssetListing(id, params);
         case 'signPsbt':
           return await this.signPsbt(id, params);
         case 'getNetwork':
@@ -242,6 +256,46 @@ export class ProviderService {
 
     await PermissionService.touch(this.origin);
     const result: SignPsbtResult = signed;
+    return makeResult(id, result);
+  }
+
+  private async signAssetListing(
+    id: string,
+    params: Record<string, unknown> | undefined,
+  ): Promise<ConnectResponse> {
+    if (this.host.isLocked()) {
+      return makeError(id, 'WALLET_LOCKED', 'The wallet is locked');
+    }
+
+    const accounts = await this.resolveAccounts();
+    if (accounts.length === 0) {
+      return makeError(id, 'ORIGIN_NOT_APPROVED', 'This site has not been granted account access');
+    }
+
+    const parsedParams = parseSignPsbtParams(params, 'signAssetListing');
+    if (!parsedParams.ok) {
+      return { avianConnect: 1, id, error: parsedParams.error };
+    }
+
+    const account = accounts[0];
+
+    // Selling is approved every time: remembering a site never covers parting with an asset.
+    const approved = await this.host.requestSignAssetListingApproval(
+      this.origin,
+      parsedParams.psbt,
+      account,
+    );
+    if (!approved) {
+      return makeError(id, 'USER_REJECTED', 'User rejected the listing');
+    }
+
+    const signed = await this.host.signAssetListing(account, parsedParams.psbt);
+    if (!signed) {
+      return makeError(id, 'USER_REJECTED', 'Authentication was cancelled');
+    }
+
+    await PermissionService.touch(this.origin);
+    const result: SignAssetListingResult = signed;
     return makeResult(id, result);
   }
 
