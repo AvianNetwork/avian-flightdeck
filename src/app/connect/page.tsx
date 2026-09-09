@@ -96,6 +96,8 @@ function ConnectClient() {
   const [psbtPrompt, setPsbtPrompt] = useState<PsbtPrompt | null>(null);
   const [listingPrompt, setListingPrompt] = useState<ListingPrompt | null>(null);
   const [buyPrompt, setBuyPrompt] = useState<BuyPrompt | null>(null);
+  /** A "use a different wallet" click, waiting for the approval dialog to finish closing. */
+  const [pendingSwitch, setPendingSwitch] = useState(false);
   const [completed, setCompleted] = useState<{ origin: string; method: string } | null>(null);
 
   // Live values the (stable) provider host closures read from.
@@ -284,10 +286,11 @@ function ConnectClient() {
    * the site can ask again — now against the wallet the user actually wants.
    */
   const switchAccount = useCallback(() => {
-    const origin = pinnedOriginRef.current;
-    if (!origin) return;
+    if (!pinnedOriginRef.current) return;
 
-    // Whichever approval is open, decline it.
+    // Decline whichever approval is open. The picker cannot be opened in the same commit — a
+    // closing dialog leaves the page inert through its exit transition, and the second dialog
+    // never appears — so the effect below waits for this one to actually be gone.
     for (const ref of [signResolverRef, psbtResolverRef, listingResolverRef, buyResolverRef]) {
       const resolver = ref.current;
       ref.current = null;
@@ -297,20 +300,45 @@ function ConnectClient() {
     setPsbtPrompt(null);
     setListingPrompt(null);
     setBuyPrompt(null);
+    setStatus('Choosing a different wallet…');
+    setPendingSwitch(true);
+  }, []);
 
-    connectResolverRef.current = async (decision: ConnectApprovalDecision) => {
-      if (!decision.approved || decision.accounts.length === 0) return;
-      try {
-        await PermissionService.grant(origin, decision.accounts);
-        await providerRef.current?.refreshAccounts();
-        emit('accountsChanged', { accounts: decision.accounts });
-        setStatus(`Now using ${decision.accounts[0]}. Ask the site to try again.`);
-      } catch (error) {
-        providerLogger.error('Failed to switch the connected account:', error);
-      }
-    };
-    setConnectPromptOrigin(origin);
-  }, [emit]);
+  // Second half of the switch: open the account picker once the approval dialog has closed.
+  useEffect(() => {
+    if (!pendingSwitch) return;
+    if (signPrompt || psbtPrompt || listingPrompt || buyPrompt) return;
+
+    const origin = pinnedOriginRef.current;
+    if (!origin) {
+      setPendingSwitch(false);
+      return;
+    }
+
+    // One frame after the close commits is not enough on its own: Radix keeps the body
+    // pointer-events-none until the exit animation ends, so give it that long.
+    const timer = setTimeout(() => {
+      connectResolverRef.current = async (decision: ConnectApprovalDecision) => {
+        if (!decision.approved || decision.accounts.length === 0) {
+          setStatus('Waiting for the site to send a request…');
+          return;
+        }
+        try {
+          await PermissionService.grant(origin, decision.accounts);
+          await providerRef.current?.refreshAccounts();
+          emit('accountsChanged', { accounts: decision.accounts });
+          setStatus(`Now using ${decision.accounts[0]} — ask the site to try again.`);
+        } catch (error) {
+          providerLogger.error('Failed to switch the connected account:', error);
+          setStatus('Could not switch wallet. Try again from the site.');
+        }
+      };
+      setConnectPromptOrigin(origin);
+      setPendingSwitch(false);
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [pendingSwitch, signPrompt, psbtPrompt, listingPrompt, buyPrompt, emit]);
 
   const host = useMemo<ProviderHost>(
     () => ({
