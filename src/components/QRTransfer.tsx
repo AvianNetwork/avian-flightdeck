@@ -399,8 +399,11 @@ export default function QRTransfer({ mode = 'both', initialTab = 'backup', onRes
                         setScannedChunks([...currentScannedChunks.current]);
                         setScannedChunkIndices(new Set(currentScannedIndices.current));
                         setLastScannedChunk(newChunk);
-                        setScanPaused(true);
-                        scanPausedRef.current = true;
+                        // Keep scanning. A chunk already collected is rejected above by index and
+                        // by content, so re-reading the code still on screen costs nothing — and
+                        // pausing after every one made restoring an eight-part backup eight
+                        // deliberate clicks. Scanning stops when the last chunk lands, or when the
+                        // user stops it.
                         setDuplicateAlert(null); // Clear any duplicate alert
 
                         // Stop the animation frame to ensure scanning actually pauses
@@ -422,7 +425,7 @@ export default function QRTransfer({ mode = 'both', initialTab = 'backup', onRes
                                 // Show progress with specific chunk information
                                 toast.info(`Scanned QR code ${chunkInfo.index} of ${chunkInfo.totalChunks}`, {
                                     description: currentChunkCount < chunkInfo.totalChunks ?
-                                        'Click "Continue Scanning" to scan another QR code' :
+                                        'Show the next QR code' :
                                         'All chunks collected! Processing backup...',
                                 });
 
@@ -495,18 +498,6 @@ export default function QRTransfer({ mode = 'both', initialTab = 'backup', onRes
 
         // Continue scanning only if not paused and not processing
         if (!scanPausedRef.current && !isCurrentlyProcessing.current) {
-            requestRef.current = requestAnimationFrame(scanQRCode);
-        }
-    };
-
-    // Resume scanning after a pause
-    const continueScanningAfterPause = () => {
-        qrBackupLogger.info('Resuming QR scanner after pause');
-        setScanPaused(false);
-        setIsProcessingChunk(false); // Reset processing flag when continuing
-        isCurrentlyProcessing.current = false; // Reset ref as well
-        scanPausedRef.current = false; // Reset pause ref as well
-        if (isCameraActiveRef.current && videoRef.current && canvasRef.current) {
             requestRef.current = requestAnimationFrame(scanQRCode);
         }
     };
@@ -788,7 +779,7 @@ export default function QRTransfer({ mode = 'both', initialTab = 'backup', onRes
 
                                             <div className="space-y-4">
                                                 <div className="flex justify-between text-sm">
-                                                    <span className="font-medium">{scanPaused ? 'Paused' : 'Scanning'}</span>
+                                                    <span className="font-medium">Scanning</span>
                                                     <span className="font-medium">{Math.round(scanProgress)}%</span>
                                                 </div>
                                                 <Progress value={scanProgress} className="h-3" />
@@ -834,16 +825,14 @@ export default function QRTransfer({ mode = 'both', initialTab = 'backup', onRes
 
                                                 <p className="text-sm text-center text-muted-foreground">
                                                     {scannedChunks.length > 0
-                                                        ? scanPaused
-                                                            ? totalExpectedChunks && scannedChunkIndices.size < totalExpectedChunks
-                                                                ? `Scanned ${scannedChunkIndices.size} of ${totalExpectedChunks} QR codes - ready for next`
-                                                                : `Scanned ${scannedChunks.length} QR code${scannedChunks.length !== 1 ? 's' : ''} - ready for next`
-                                                            : `Detected ${scannedChunks.length} QR code${scannedChunks.length !== 1 ? 's' : ''}`
+                                                        ? totalExpectedChunks && scannedChunkIndices.size < totalExpectedChunks
+                                                            ? `Scanned ${scannedChunkIndices.size} of ${totalExpectedChunks} QR codes — show the next one`
+                                                            : `Scanned ${scannedChunks.length} QR code${scannedChunks.length !== 1 ? 's' : ''}`
                                                         : 'Position your camera over the QR code'}
                                                 </p>
                                             </div>
 
-                                            {scanPaused && scannedChunks.length > 0 && (
+                                            {scannedChunks.length > 0 && (
                                                 <Alert>
                                                     <AlertDescription>
                                                         {(() => {
@@ -922,16 +911,6 @@ export default function QRTransfer({ mode = 'both', initialTab = 'backup', onRes
                                             )}
 
                                             <div className="space-y-3">
-                                                {scanPaused && scannedChunks.length > 0 && (
-                                                    <Button
-                                                        onClick={continueScanningAfterPause}
-                                                        className="w-full"
-                                                        size="lg"
-                                                    >
-                                                        <Camera className="h-4 w-4 mr-2" /> Continue Scanning
-                                                    </Button>
-                                                )}
-
                                                 <div className="flex gap-3">
                                                     <Button variant="outline" onClick={stopScanner} className="flex-1">
                                                         <X className="h-4 w-4 mr-2" /> Stop Scanner
