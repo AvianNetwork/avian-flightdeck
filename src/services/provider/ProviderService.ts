@@ -44,12 +44,19 @@ export interface ConnectApprovalDecision {
  * The wallet-side capabilities the engine needs. The /connect page implements this with the
  * approval dialogs, SecurityContext.requireAuth and WalletService.
  */
+/**
+ * How an approval screen resolved. `'account-changed'` means the user switched wallets rather than
+ * deciding: the request must be answered — leaving it open strands the dApp — but answering it as a
+ * refusal would be a lie, and would tell the site to give up rather than ask again.
+ */
+export type ApprovalOutcome = boolean | 'account-changed';
+
 export interface ProviderHost {
   /** Locked, or no wallet set up at all. */
   isLocked(): boolean;
   requestConnectApproval(origin: string): Promise<ConnectApprovalDecision>;
   /** Shows the origin and the verbatim message; resolves false when the user declines. */
-  requestSignApproval(origin: string, message: string, account: string): Promise<boolean>;
+  requestSignApproval(origin: string, message: string, account: string): Promise<ApprovalOutcome>;
   /**
    * Authenticates the user (password or biometric) and signs. Resolves null when the user
    * cancels authentication. Never resolves with anything but a base64 signature.
@@ -65,7 +72,7 @@ export interface ProviderHost {
     account: string,
     /** True when the dApp asked the wallet to broadcast — a materially different consent. */
     broadcast: boolean,
-  ): Promise<boolean>;
+  ): Promise<ApprovalOutcome>;
   /**
    * Authenticates the user and signs the wallet's inputs with Avian's FORKID sighash, returning the
    * updated PSBT. Resolves null when the user cancels authentication. Never broadcasts.
@@ -85,9 +92,9 @@ export interface ProviderHost {
     assetName: string,
     priceSats: number,
     account: string,
-  ): Promise<boolean>;
+  ): Promise<ApprovalOutcome>;
   /** Shows what the buyer pays and receives, decoded from the seller-signed listing. */
-  requestBuyAssetApproval(origin: string, listingPsbt: string, account: string): Promise<boolean>;
+  requestBuyAssetApproval(origin: string, listingPsbt: string, account: string): Promise<ApprovalOutcome>;
   /**
    * Authenticates the user and signs the seller's asset input with SINGLE|FORKID|ANYONECANPAY.
    * Resolves null when the user cancels authentication, and throws when the PSBT is not a listing
@@ -107,6 +114,14 @@ export interface ProviderHost {
   getNetwork(): Promise<NetworkResult>;
   emit(event: ConnectEventName, data: unknown): void;
 }
+
+/** The answer a switched wallet gets: ask again, do not treat it as a refusal. */
+const accountChanged = (id: string) =>
+  makeError(
+    id,
+    'ACCOUNT_CHANGED',
+    'The user switched to a different wallet. Read the new account and send the request again.',
+  );
 
 export class ProviderService {
   private readonly origin: string;
@@ -237,6 +252,7 @@ export class ProviderService {
 
     // Remembering a site skips the connect screen only: every signature is approved explicitly.
     const approved = await this.host.requestSignApproval(this.origin, parsedParams.message, account);
+    if (approved === 'account-changed') return accountChanged(id);
     if (!approved) {
       return makeError(id, 'USER_REJECTED', 'User rejected the signature request');
     }
@@ -280,6 +296,7 @@ export class ProviderService {
       account,
       parsedParams.broadcast,
     );
+    if (approved === 'account-changed') return accountChanged(id);
     if (!approved) {
       return makeError(id, 'USER_REJECTED', 'User rejected the PSBT signing request');
     }
@@ -322,6 +339,7 @@ export class ProviderService {
       parsed.priceSats,
       account,
     );
+    if (approved === 'account-changed') return accountChanged(id);
     if (!approved) {
       return makeError(id, 'USER_REJECTED', 'User rejected the listing');
     }
@@ -363,6 +381,7 @@ export class ProviderService {
     // The approval screen decodes the listing itself, so the price shown is the seller's, not the
     // site's claim about it.
     const approved = await this.host.requestBuyAssetApproval(this.origin, parsed.psbt, account);
+    if (approved === 'account-changed') return accountChanged(id);
     if (!approved) {
       return makeError(id, 'USER_REJECTED', 'User rejected the purchase');
     }
