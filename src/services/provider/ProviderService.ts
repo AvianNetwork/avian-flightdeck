@@ -97,9 +97,11 @@ export interface ProviderHost {
     account: string,
     request: { assetName: string; priceSats: number; amount?: string },
   ): Promise<CreateAssetListingResult | null>;
+  /** `broadcast` false returns the completed transaction without sending it, for inspection. */
   completeAssetListing(
     account: string,
     listingPsbt: string,
+    broadcast: boolean,
   ): Promise<CompleteAssetListingResult | null>;
   getPublicKey(account: string): Promise<string | undefined>;
   getNetwork(): Promise<NetworkResult>;
@@ -365,7 +367,7 @@ export class ProviderService {
       return makeError(id, 'USER_REJECTED', 'User rejected the purchase');
     }
 
-    const bought = await this.host.completeAssetListing(account, parsed.psbt);
+    const bought = await this.host.completeAssetListing(account, parsed.psbt, parsed.broadcast);
     if (!bought) {
       return makeError(id, 'USER_REJECTED', 'Authentication was cancelled');
     }

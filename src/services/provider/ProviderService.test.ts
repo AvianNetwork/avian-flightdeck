@@ -449,8 +449,18 @@ describe('completeAssetListing', () => {
     const response = await provider.handle(request('completeAssetListing', { psbt: PSBT }));
 
     expect(host.requestBuyAssetApproval).toHaveBeenCalledWith(ORIGIN, PSBT, ADDRESS);
-    expect(host.completeAssetListing).toHaveBeenCalledWith(ADDRESS, PSBT);
+    expect(host.completeAssetListing).toHaveBeenCalledWith(ADDRESS, PSBT, true);
     expect(response.result).toEqual(BOUGHT);
+  });
+
+  it('passes broadcast: false through, so a caller can inspect the swap first', async () => {
+    const host = createHost();
+    const provider = await connectFirst(host);
+
+    await provider.handle(request('completeAssetListing', { psbt: PSBT, broadcast: false }));
+
+    // Silently ignoring this would send an irreversible transaction the caller asked to hold back.
+    expect(host.completeAssetListing).toHaveBeenCalledWith(ADDRESS, PSBT, false);
   });
 
   it('never buys when the user rejects', async () => {

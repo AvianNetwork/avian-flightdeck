@@ -130,10 +130,25 @@ describe('parseSignPsbtParams', () => {
     expect(parseSignPsbtParams({ psbt: PSBT, broadcast: 1 }).ok).toBe(false);
   });
 
-  it('refuses to broadcast from completeAssetListing, which always broadcasts itself', () => {
-    const result = parseSignPsbtParams({ psbt: PSBT, broadcast: true }, 'completeAssetListing');
-    expect(result.ok).toBe(false);
-    expect(result.ok === false && result.error.message).toMatch(/cannot broadcast/);
+  it('defaults broadcasting per method, and honours it either way', () => {
+    // Signing does not send unless asked; completing a purchase sends unless asked not to, since
+    // an unsent swap only widens the race to lose it.
+    expect(parseSignPsbtParams({ psbt: PSBT }, 'completeAssetListing')).toEqual({
+      ok: true,
+      psbt: PSBT,
+      broadcast: true,
+    });
+    // The value a caller uses to inspect a swap before sending it must survive parsing.
+    expect(parseSignPsbtParams({ psbt: PSBT, broadcast: false }, 'completeAssetListing')).toEqual({
+      ok: true,
+      psbt: PSBT,
+      broadcast: false,
+    });
+    expect(parseSignPsbtParams({ psbt: PSBT, broadcast: true }, 'completeAssetListing')).toEqual({
+      ok: true,
+      psbt: PSBT,
+      broadcast: true,
+    });
   });
 
   it('rejects a missing, empty or non-string psbt', () => {

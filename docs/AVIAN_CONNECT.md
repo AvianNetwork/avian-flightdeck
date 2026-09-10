@@ -255,7 +255,10 @@ authentication. Remembering a site never covers a sale.
 
 ### `completeAssetListing({ psbt })`
 
-- **params**: `{ psbt: string }` — a seller-signed listing, at most 100000 characters
+- **params**: `{ psbt: string, broadcast?: boolean }` — a seller-signed listing, at most 100000
+  characters. `broadcast` defaults to **true** here: an unsent swap only widens the race to lose it.
+  Pass `false` to get the completed, signed transaction back without sending it — for inspecting it
+  with `testmempoolaccept` before anything is irreversible.
 - **result**: `{ psbt, broadcast, txid?, broadcastError?, assetName, assetAmount, pricePaidSats, feeSats }`
 
 **The buyer's wallet completes the swap.** It decodes the seller's listing, funds it from the
