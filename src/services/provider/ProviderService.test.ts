@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { ApprovalOutcome } from '@/services/provider';
 import {
   CompleteAssetListingResult,
   CreateAssetListingResult,
@@ -77,13 +78,13 @@ function baseHost() {
       accounts: [ADDRESS],
       remember: true,
     })),
-    requestSignApproval: vi.fn(async () => true),
+    requestSignApproval: vi.fn(async () => true as ApprovalOutcome),
     signMessage: vi.fn(async () => SIGNATURE as string | null),
-    requestSignPsbtApproval: vi.fn(async () => true),
+    requestSignPsbtApproval: vi.fn(async () => true as ApprovalOutcome),
     signPsbt: vi.fn(async () => SIGNED_PSBT as SignPsbtResult | null),
-    requestSignAssetListingApproval: vi.fn(async () => true),
+    requestSignAssetListingApproval: vi.fn(async () => true as ApprovalOutcome),
     createAssetListing: vi.fn(async () => SIGNED_LISTING as CreateAssetListingResult | null),
-    requestBuyAssetApproval: vi.fn(async () => true),
+    requestBuyAssetApproval: vi.fn(async () => true as ApprovalOutcome),
     completeAssetListing: vi.fn(async () => BOUGHT as CompleteAssetListingResult | null),
     getPublicKey: vi.fn(async () => undefined as string | undefined),
     getNetwork: vi.fn(async () => ({ network: 'mainnet' as const, genesisHash: null })),
