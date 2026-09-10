@@ -474,6 +474,48 @@ describe('completeAssetListing', () => {
   });
 });
 
+describe('switching wallets mid-request', () => {
+  const connectFirst = async (host: ReturnType<typeof baseHost>) => {
+    const provider = new ProviderService(ORIGIN, host);
+    await provider.handle(request('connect'));
+    return provider;
+  };
+
+  it('answers ACCOUNT_CHANGED, not USER_REJECTED', async () => {
+    // The user switched wallets instead of deciding. Reporting a refusal would tell the site to
+    // give up, when what it should do is rebuild the request against the new account and retry.
+    const host = createHost({
+      requestSignApproval: vi.fn(async () => 'account-changed' as const),
+    });
+    const provider = await connectFirst(host);
+
+    const response = await provider.handle(request('signMessage', { message: 'log me in' }));
+
+    expect(response.error?.code).toBe('ACCOUNT_CHANGED');
+    expect(host.signMessage).not.toHaveBeenCalled();
+  });
+
+  it('does the same for every approval, so no flow reports a false refusal', async () => {
+    const cases = [
+      ['requestSignPsbtApproval', 'signPsbt', { psbt: PSBT }],
+      ['requestSignAssetListingApproval', 'createAssetListing', {
+        assetName: 'RLM#BRBAEY6A94VXQ',
+        priceSats: 500 * 100_000_000,
+      }],
+      ['requestBuyAssetApproval', 'completeAssetListing', { psbt: PSBT }],
+    ] as const;
+
+    for (const [approval, method, params] of cases) {
+      const host = createHost({ [approval]: vi.fn(async () => 'account-changed' as const) });
+      const provider = await connectFirst(host);
+
+      const response = await provider.handle(request(method, params));
+
+      expect(response.error?.code).toBe('ACCOUNT_CHANGED');
+    }
+  });
+});
+
 describe('signPsbt', () => {
   const connectFirst = async (host: ReturnType<typeof baseHost>) => {
     const provider = new ProviderService(ORIGIN, host);

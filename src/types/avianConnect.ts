@@ -11,6 +11,12 @@ export const AVIAN_CONNECT_VERSION = 1;
 
 export const CONNECT_ERROR_CODES = [
   'USER_REJECTED',
+  /**
+   * The user switched the wallet this origin is connected with instead of answering. The grant has
+   * moved and `accountsChanged` has been emitted, so the request should be rebuilt against the new
+   * account and sent again — not reported as a refusal.
+   */
+  'ACCOUNT_CHANGED',
   'ORIGIN_NOT_APPROVED',
   'WALLET_LOCKED',
   'UNSUPPORTED_METHOD',

@@ -38,6 +38,7 @@ import {
   validateRedirectUri,
 } from '@/services/provider';
 import { ConnectEventName, ConnectResponse } from '@/types/avianConnect';
+import type { ApprovalOutcome } from '@/services/provider';
 
 type Transport = 'idle' | 'popup' | 'redirect' | 'standalone';
 
@@ -111,10 +112,10 @@ function ConnectClient() {
   const connectResolverRef = useRef<
     ((decision: ConnectApprovalDecision) => void | Promise<void>) | null
   >(null);
-  const signResolverRef = useRef<((approved: boolean) => void) | null>(null);
-  const psbtResolverRef = useRef<((approved: boolean) => void) | null>(null);
-  const listingResolverRef = useRef<((approved: boolean) => void) | null>(null);
-  const buyResolverRef = useRef<((approved: boolean) => void) | null>(null);
+  const signResolverRef = useRef<((outcome: ApprovalOutcome) => void) | null>(null);
+  const psbtResolverRef = useRef<((outcome: ApprovalOutcome) => void) | null>(null);
+  const listingResolverRef = useRef<((outcome: ApprovalOutcome) => void) | null>(null);
+  const buyResolverRef = useRef<((outcome: ApprovalOutcome) => void) | null>(null);
   const providerRef = useRef<ProviderService | null>(null);
   const pendingIdsRef = useRef<Set<string>>(new Set());
   const answeredRef = useRef<Map<string, ConnectResponse>>(new Map());
@@ -181,7 +182,7 @@ function ConnectClient() {
 
   const requestSignApproval = useCallback(
     (origin: string, message: string, account: string) =>
-      new Promise<boolean>((resolve) => {
+      new Promise<ApprovalOutcome>((resolve) => {
         signResolverRef.current = resolve;
         setSignPrompt({ origin, message, account });
       }),
@@ -197,7 +198,7 @@ function ConnectClient() {
 
   const requestSignAssetListingApproval = useCallback(
     (origin: string, assetName: string, priceSats: number, account: string) =>
-      new Promise<boolean>((resolve) => {
+      new Promise<ApprovalOutcome>((resolve) => {
         listingResolverRef.current = resolve;
         setListingPrompt({ origin, account, assetName, priceSats });
       }),
@@ -221,7 +222,7 @@ function ConnectClient() {
         providerLogger.warn('Rejected an unusable listing from a site:', error);
         return false;
       }
-      return new Promise<boolean>((resolve) => {
+      return new Promise<ApprovalOutcome>((resolve) => {
         buyResolverRef.current = resolve;
         setBuyPrompt({ origin, account, listing });
       });
@@ -247,7 +248,7 @@ function ConnectClient() {
         providerLogger.warn('Rejected an unparseable PSBT from a site:', error);
         return false;
       }
-      return new Promise<boolean>((resolve) => {
+      return new Promise<ApprovalOutcome>((resolve) => {
         psbtResolverRef.current = resolve;
         setPsbtPrompt({ origin, account, summary, broadcast });
       });
@@ -285,12 +286,12 @@ function ConnectClient() {
    * the address `connect` gave it. Instead the grant is moved, `accountsChanged` is emitted, and
    * the site can ask again — now against the wallet the user actually wants.
    */
-  /** Decline whichever approval is waiting, and clear it. */
-  const declinePendingApproval = useCallback(() => {
+  /** Answer whichever approval is waiting, and clear it. */
+  const answerPendingApproval = useCallback((outcome: ApprovalOutcome) => {
     for (const ref of [signResolverRef, psbtResolverRef, listingResolverRef, buyResolverRef]) {
       const resolver = ref.current;
       ref.current = null;
-      resolver?.(false);
+      resolver?.(outcome);
     }
     setSignPrompt(null);
     setPsbtPrompt(null);
@@ -343,15 +344,16 @@ function ConnectClient() {
           providerLogger.error('Failed to switch the connected account:', error);
           setStatus('Could not switch wallet. Try again from the site.');
         }
-        // Answer last: this is what closes the popup or redirects away.
+        // Answer last: this is what closes the popup or redirects away. Answering as a switch
+        // rather than a refusal is what lets the site ask again instead of reporting a decline.
         setSwitching(false);
-        declinePendingApproval();
+        answerPendingApproval('account-changed');
       };
       setConnectPromptOrigin(origin);
     }, 250);
 
     return () => clearTimeout(timer);
-  }, [switching, emit, declinePendingApproval]);
+  }, [switching, emit, answerPendingApproval]);
 
   const host = useMemo<ProviderHost>(
     () => ({

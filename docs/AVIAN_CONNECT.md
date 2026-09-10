@@ -325,6 +325,7 @@ Any method not listed above — including `sendTransaction` and asset operations
 | Code                  | When                                                                    |
 | --------------------- | ----------------------------------------------------------------------- |
 | `USER_REJECTED`       | The user declined an approval screen, cancelled authentication, or closed the wallet window. |
+| `ACCOUNT_CHANGED`     | The user switched wallets instead of answering. **Not a refusal** — rebuild the request against the new account and send it again. |
 | `ORIGIN_NOT_APPROVED` | The method needs a permission this origin does not have.                |
 | `WALLET_LOCKED`       | The wallet is locked, or has no wallet set up yet.                      |
 | `UNSUPPORTED_METHOD`  | Unknown method, or a method deferred to a later phase.                  |
@@ -461,6 +462,12 @@ Every approval screen therefore offers **Use a different wallet** when more than
 it hides the approval, shows the account picker, moves the grant to the chosen account, emits
 `accountsChanged`, and only then **rejects the pending request** with `USER_REJECTED`. The site
 should re-read the account and ask again.
+
+`ACCOUNT_CHANGED` exists so this does not read as a decline. A dApp that treats every error as a
+refusal will tell the user "you declined the request" when they did the opposite, and stop. The
+right handling is to read the new account (from the `accountsChanged` event or `getAccounts`),
+rebuild the request against it, and send it again — for a login that means a fresh message naming
+the new wallet, since the old one names the old.
 
 That order matters: answering a request ends the wallet session — the redirect transport navigates
 back to the dApp, and a popup is usually closed by the dApp as soon as it has a response — so a
