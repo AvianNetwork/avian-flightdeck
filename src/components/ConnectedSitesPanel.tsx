@@ -10,7 +10,15 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import ConfirmationModal from '@/components/ConfirmationModal';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { PermissionService } from '@/services/provider';
+import { StorageService } from '@/services/core/StorageService';
 import { OriginPermission } from '@/types/avianConnect';
 import { providerLogger } from '@/lib/Logger';
 
@@ -39,12 +47,17 @@ export default function ConnectedSitesPanel() {
   const [isLoading, setIsLoading] = useState(true);
   const [pendingRevoke, setPendingRevoke] = useState<string | null>(null);
   const [confirmRevokeAll, setConfirmRevokeAll] = useState(false);
+  const [wallets, setWallets] = useState<Array<{ name: string; address: string }>>([]);
 
   const load = useCallback(async () => {
     setIsLoading(true);
     try {
-      const stored = await PermissionService.list();
+      const [stored, allWallets] = await Promise.all([
+        PermissionService.list(),
+        StorageService.getAllWallets(),
+      ]);
       setPermissions([...stored].sort((a, b) => b.lastUsedAt - a.lastUsedAt));
+      setWallets(allWallets.map((wallet) => ({ name: wallet.name, address: wallet.address })));
     } catch (error) {
       providerLogger.error('Failed to load connected sites:', error);
       toast.error('Error', { description: 'Failed to load connected sites' });
@@ -56,6 +69,27 @@ export default function ConnectedSitesPanel() {
   useEffect(() => {
     load();
   }, [load]);
+
+  /**
+   * Point a site at a different wallet.
+   *
+   * A grant is deliberately independent of the active wallet — switching wallets must not silently
+   * hand a site an address it was never given — so this is the only place a site's account can be
+   * changed without disconnecting it entirely.
+   */
+  const changeAccount = async (origin: string, address: string) => {
+    try {
+      await PermissionService.grant(origin, [address]);
+      announceChange();
+      await load();
+      toast.success('Wallet changed', {
+        description: `${origin} will now see ${shorten(address)}.`,
+      });
+    } catch (error) {
+      providerLogger.error('Failed to change the connected wallet:', error);
+      toast.error('Error', { description: 'Failed to change the connected wallet' });
+    }
+  };
 
   const revoke = async (origin: string) => {
     try {
@@ -111,7 +145,9 @@ export default function ConnectedSitesPanel() {
           <ShieldCheck className="h-4 w-4" />
           <AlertDescription className="text-xs">
             These sites can see the address you shared with them and can ask you to sign messages.
-            Every signature still needs your explicit approval and authentication. See{' '}
+            Every signature still needs your explicit approval and authentication. A site keeps the
+            wallet you connected with — it does not follow the wallet you are using — so change it
+            here if you want it to see a different one. See{' '}
             <Link href="/connect" className="underline underline-offset-2">
               Avian Connect
             </Link>
@@ -142,12 +178,34 @@ export default function ConnectedSitesPanel() {
                       </span>
                     </div>
 
-                    <div className="flex flex-wrap gap-1.5">
-                      {permission.accounts.map((account) => (
-                        <Badge key={account} variant="secondary" className="font-mono text-xs">
-                          {shorten(account)}
-                        </Badge>
-                      ))}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {wallets.length > 1 ? (
+                        <Select
+                          value={permission.accounts[0] ?? ''}
+                          onValueChange={(address) => changeAccount(permission.origin, address)}
+                        >
+                          <SelectTrigger className="h-7 w-auto gap-2 px-2 font-mono text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {wallets.map((wallet) => (
+                              <SelectItem
+                                key={wallet.address}
+                                value={wallet.address}
+                                className="font-mono text-xs"
+                              >
+                                {wallet.name} · {shorten(wallet.address)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        permission.accounts.map((account) => (
+                          <Badge key={account} variant="secondary" className="font-mono text-xs">
+                            {shorten(account)}
+                          </Badge>
+                        ))
+                      )}
                     </div>
 
                     <div className="grid gap-0.5 text-xs text-muted-foreground sm:grid-cols-2">
