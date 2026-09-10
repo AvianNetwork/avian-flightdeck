@@ -1917,17 +1917,21 @@ export class StorageService {
         if (walletCredentials[walletAddress]) {
           return walletCredentials[walletAddress];
         }
+
+        // Asked about a specific wallet and it has no credential: say so. Falling through to the
+        // global preference would hand back a *different* wallet's credential, which the caller
+        // then reads as "this wallet has biometrics". It does not — and the password lookup is
+        // correctly scoped, so the unlock proceeds to a prompt and then fails to find anything to
+        // decrypt. One wallet appearing to work and another failing oddly is this leak.
+        return null;
       }
 
-      // If no wallet address specified or no credential found, try the active wallet
-      if (!walletAddress) {
-        const activeWallet = await this.getActiveWallet();
-        if (activeWallet?.biometricCredentialId) {
-          return activeWallet.biometricCredentialId;
-        }
+      // No wallet named: the active one, then the global preference for pre-per-wallet installs.
+      const activeWallet = await this.getActiveWallet();
+      if (activeWallet?.biometricCredentialId) {
+        return activeWallet.biometricCredentialId;
       }
 
-      // Fall back to the default credential as last resort
       const result = await this.getPreference('biometricCredentialId');
       return result as number[] | null;
     } catch (error) {
