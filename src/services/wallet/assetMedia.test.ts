@@ -10,6 +10,10 @@ import { IPFS_GATEWAY, resolveAssetMedia, resolveMediaUrl } from './AssetService
  */
 
 /** The real REALM document at QmY6dx… — a unique game item minted on Avian. */
+/** The 1x1 PNG REALM uses in its inline sample. */
+const INLINE_PNG =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+
 const REALM_METADATA = {
   symbol: 'RLM#RK1KJRAPGFOMI',
   name: 'Runed Grips',
@@ -49,14 +53,29 @@ describe('resolveMediaUrl', () => {
     expect(resolveMediaUrl('ipfs://QmAbc')).toBe(`${IPFS_GATEWAY}QmAbc`);
   });
 
-  it('refuses schemes that are not fetchable images', () => {
-    // Metadata is attacker-controlled, so anything but https/ipfs is dropped rather than rendered.
+  it('accepts an inline raster image, which newer REALM mints embed directly', () => {
+    expect(resolveMediaUrl(INLINE_PNG)).toBe(INLINE_PNG);
+    expect(resolveMediaUrl('data:image/webp;base64,UklGRg==')).toBe('data:image/webp;base64,UklGRg==');
+  });
+
+  it('refuses schemes that are not fetchable raster images', () => {
+    // Metadata is attacker-controlled, so everything outside the narrow accepted set is dropped.
     expect(resolveMediaUrl('javascript:alert(1)')).toBeNull();
-    expect(resolveMediaUrl('data:image/svg+xml,<svg onload="alert(1)"/>')).toBeNull();
     expect(resolveMediaUrl('http://therealm.avn.zone/grips.webp')).toBeNull();
     expect(resolveMediaUrl('')).toBeNull();
     expect(resolveMediaUrl(undefined)).toBeNull();
     expect(resolveMediaUrl(42)).toBeNull();
+  });
+
+  it('refuses SVG and other data URIs that are not raster images', () => {
+    // An <img> will not run scripts in an SVG, but SVG is the one image type that is also a
+    // document, and nothing here needs it.
+    expect(resolveMediaUrl('data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=')).toBeNull();
+    expect(resolveMediaUrl('data:image/svg+xml,<svg onload="alert(1)"/>')).toBeNull();
+    expect(resolveMediaUrl('data:text/html;base64,PGgxPmhpPC9oMT4=')).toBeNull();
+    expect(resolveMediaUrl('data:application/json;base64,e30=')).toBeNull();
+    // Not base64 at all, so not something we hand to an <img>.
+    expect(resolveMediaUrl('data:image/png,notbase64')).toBeNull();
   });
 });
 
@@ -136,10 +155,54 @@ describe('resolveAssetMedia', () => {
     expect(first).toEqual(second);
   });
 
-  it('refuses a document too large to be metadata', async () => {
-    const huge = JSON.stringify({ image: 'https://x.test/a.webp', pad: 'x'.repeat(70 * 1024) });
+  it('refuses a document too large to be metadata, inlined art included', async () => {
+    // The ceiling is generous enough for embedded art but still bounds what one asset can make
+    // the wallet hold in memory.
+    const huge = JSON.stringify({ image: 'https://x.test/a.webp', pad: 'x'.repeat(600 * 1024) });
     vi.stubGlobal('fetch', respondWith('application/json', huge));
 
     await expect(resolveAssetMedia(freshHash())).resolves.toEqual({ imageUrl: null });
+  });
+});
+
+describe('the two shapes of REALM metadata', () => {
+  /** Newer mints inline the art; the ones already on chain link to it. Both must work. */
+  const INLINE_METADATA = {
+    symbol: 'RLM#RYI7RS9Y5E7B5',
+    name: 'Runed Grips',
+    description: 'A rare grips forged in REALM, minted by craigd.avn.',
+    image: INLINE_PNG,
+    creator: { name: 'craigd.avn' },
+    realm: { category: 'gloves', kind: 'grips', rarity: 'rare', stats: { attack: 4, defence: 0 } },
+  };
+
+  it('reads an inline image straight out of the document', async () => {
+    vi.stubGlobal('fetch', respondWith('application/json', JSON.stringify(INLINE_METADATA)));
+
+    const media = await resolveAssetMedia(freshHash());
+
+    expect(media.imageUrl).toBe(INLINE_PNG);
+    expect(media.name).toBe('Runed Grips');
+  });
+
+  it('still reads a linked image, since those are already on chain', async () => {
+    vi.stubGlobal('fetch', respondWith('application/json', JSON.stringify(REALM_METADATA)));
+
+    const media = await resolveAssetMedia(freshHash());
+
+    expect(media.imageUrl).toBe('https://therealm.avn.zone/assets/artifacts/grips.webp');
+  });
+
+  it('reads a document big enough to carry real art inline', async () => {
+    // A 90 KB webp is ~120 KB once base64-encoded — comfortably past the old 64 KB ceiling, which
+    // would have shown no image at all for every newer mint.
+    const art = 'A'.repeat(160 * 1024);
+    const heavy = JSON.stringify({ name: 'Heavy', image: `data:image/webp;base64,${art}` });
+    expect(heavy.length).toBeGreaterThan(64 * 1024);
+    vi.stubGlobal('fetch', respondWith('application/json', heavy));
+
+    const media = await resolveAssetMedia(freshHash());
+
+    expect(media.imageUrl).toBe(`data:image/webp;base64,${art}`);
   });
 });

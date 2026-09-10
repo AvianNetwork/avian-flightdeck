@@ -24,15 +24,28 @@ export interface AssetMedia {
 }
 
 /**
+ * Inline raster images, which newer REALM mints embed directly in the metadata rather than linking.
+ *
+ * SVG is deliberately excluded. An `<img>` does not run scripts in an SVG, but it is the one image
+ * type that is also a document, and nothing here needs it. A mislabelled payload is harmless: the
+ * browser fails to decode it and the caller falls back to the placeholder.
+ */
+const DATA_IMAGE = /^data:image\/(?:png|jpeg|jpg|gif|webp|avif);base64,[A-Za-z0-9+/]+={0,2}$/;
+
+/**
  * Turn a metadata `image` value into something safe to put in an `<img src>`.
  *
  * The metadata is attacker-controlled — anyone can mint an asset whose JSON points anywhere — so
- * only `https:` and `ipfs:` are accepted. That rules out `javascript:`, `data:` (a vector for
- * oversized or mislabelled payloads) and plaintext `http:`.
+ * the accepted forms are narrow: `https:`, `ipfs:`, and inline base64 raster `data:` images. That
+ * rules out `javascript:`, plaintext `http:`, and `data:` in any form that is not a raster image.
+ *
+ * An inline image is the better shape for privacy as well as durability: nothing is fetched, so
+ * viewing an asset cannot report the holder's IP to whoever minted it.
  */
 export function resolveMediaUrl(value: unknown): string | null {
   if (typeof value !== 'string' || !value) return null;
   if (value.startsWith('ipfs://')) return `${IPFS_GATEWAY}${value.slice('ipfs://'.length)}`;
+  if (value.startsWith('data:')) return DATA_IMAGE.test(value) ? value : null;
   try {
     return new URL(value).protocol === 'https:' ? value : null;
   } catch {
@@ -40,8 +53,15 @@ export function resolveMediaUrl(value: unknown): string | null {
   }
 }
 
-/** Largest metadata document we will read; real ones are a few hundred bytes. */
-const MAX_METADATA_BYTES = 64 * 1024;
+/**
+ * Largest metadata document we will read.
+ *
+ * A linking document is a few hundred bytes, but one with the image inlined is the size of the art
+ * plus a third for base64 — a 90 KB webp lands near 120 KB. This has to clear that comfortably or
+ * the newer mints simply show no image, while still bounding what one asset can make the wallet
+ * hold in memory.
+ */
+const MAX_METADATA_BYTES = 512 * 1024;
 
 const mediaCache = new Map<string, Promise<AssetMedia>>();
 
