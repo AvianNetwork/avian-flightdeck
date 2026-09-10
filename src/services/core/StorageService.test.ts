@@ -65,6 +65,38 @@ describe('biometric password migration', () => {
   });
 });
 
+describe('per-wallet biometrics', () => {
+  it('does not hand one wallet another wallet credential', async () => {
+    // Enrolling wallet A also writes a global credential preference for older installs. Asking
+    // about B must not return A's: the caller reads a credential as "this wallet has biometrics",
+    // and B's password lookup is correctly scoped, so the unlock prompts and then finds nothing.
+    const enrolled = await createWallet({ name: 'Enrolled' });
+    await StorageService.setBiometricCredential([1, 2, 3], ADDRESS_A);
+    await createWallet({ name: 'Not enrolled', address: ADDRESS_B, makeActive: false });
+
+    expect(await StorageService.getBiometricCredential(ADDRESS_A)).toEqual([1, 2, 3]);
+    expect(await StorageService.getBiometricCredential(ADDRESS_B)).toBeNull();
+    expect(enrolled.address).toBe(ADDRESS_A);
+  });
+
+  it('keeps the enablement flags apart too', async () => {
+    await createWallet({ name: 'Enrolled' });
+    await StorageService.setBiometricCredential([1, 2, 3], ADDRESS_A);
+    await createWallet({ name: 'Not enrolled', address: ADDRESS_B, makeActive: false });
+
+    expect(await StorageService.isBiometricEnabledForWallet(ADDRESS_A)).toBe(true);
+    expect(await StorageService.isBiometricEnabledForWallet(ADDRESS_B)).toBe(false);
+  });
+
+  it('still answers for the active wallet when no wallet is named', async () => {
+    // The unnamed form is what older call sites use; it may fall back, a named one may not.
+    await createWallet({ name: 'Enrolled' });
+    await StorageService.setBiometricCredential([4, 5, 6], ADDRESS_A);
+
+    expect(await StorageService.getBiometricCredential()).toEqual([4, 5, 6]);
+  });
+});
+
 describe('creating wallets', () => {
   it('round-trips a wallet through IndexedDB', async () => {
     const created = await createWallet();
