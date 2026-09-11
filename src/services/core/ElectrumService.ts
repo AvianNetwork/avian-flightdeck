@@ -525,7 +525,10 @@ export class ElectrumService {
       return balances;
     } catch (error) {
       electrumLogger.debug(`Failed to get asset balances for ${address.substring(0, 5)}...:`, error);
-      return {};
+      // Deliberately rethrown. Answering {} makes a dropped connection indistinguishable from a
+      // wallet holding nothing, and callers render that as "you have no assets" — which is how a
+      // refresh during a wobble wiped the list.
+      throw error instanceof Error ? error : new Error('Failed to load asset balances');
     }
   }
 
