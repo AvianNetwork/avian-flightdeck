@@ -3,7 +3,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Coins, Plus, PlusCircle, RefreshCw, Search, Send } from 'lucide-react';
 
+import { toast } from 'sonner';
+
 import { useWallet } from '@/contexts/WalletContext';
+import { walletLogger } from '@/lib/Logger';
 import {
   getHeldAssets,
   resolveAssetMedia,
@@ -100,22 +103,39 @@ export function AssetList({ className }: { className?: string }) {
   const [assets, setAssets] = useState<HeldAsset[]>([]);
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  /** The last refresh could not reach the network, so what is listed may be stale. */
+  const [loadFailed, setLoadFailed] = useState(false);
   const [query, setQuery] = useState('');
   const [sending, setSending] = useState<HeldAsset | null>(null);
   const [reissuing, setReissuing] = useState<HeldAsset | null>(null);
   const [creating, setCreating] = useState(false);
   const [preview, setPreview] = useState<{ url: string; name: string } | null>(null);
 
-  const load = useCallback(async () => {
-    if (!electrum || !address) return;
-    setLoading(true);
-    try {
-      setAssets(await getHeldAssets(electrum, address));
-    } finally {
-      setLoading(false);
-      setLoaded(true);
-    }
-  }, [electrum, address]);
+  const load = useCallback(
+    async (announceFailure = false) => {
+      if (!electrum || !address) return;
+      setLoading(true);
+      try {
+        setAssets(await getHeldAssets(electrum, address));
+        setLoadFailed(false);
+      } catch (error) {
+        // Keep whatever is already on screen. A failed refresh means we do not know what is held,
+        // which is not the same as knowing nothing is — and replacing a list of assets with an
+        // empty one reads as "they are gone".
+        walletLogger.warn('Could not refresh assets:', error);
+        setLoadFailed(true);
+        if (announceFailure) {
+          toast.error('Could not reach the network', {
+            description: 'Your assets are unchanged — this is just the refresh failing.',
+          });
+        }
+      } finally {
+        setLoading(false);
+        setLoaded(true);
+      }
+    },
+    [electrum, address],
+  );
 
   // Reload now and again shortly after — a just-spent/created asset only drops off (or appears)
   // once ElectrumX reflects the new tx, which lags the broadcast by a moment.
@@ -170,7 +190,7 @@ export function AssetList({ className }: { className?: string }) {
             variant="ghost"
             size="icon"
             className="h-8 w-8"
-            onClick={() => void load()}
+            onClick={() => void load(true)}
             disabled={loading}
             aria-label="Refresh assets"
           >
@@ -179,6 +199,15 @@ export function AssetList({ className }: { className?: string }) {
         </span>
       </CardHeader>
       <CardContent className="p-0">
+        {loadFailed && (
+          <div className="flex items-start gap-2 border-b border-caution/30 bg-caution/10 px-4 py-3 text-sm text-caution">
+            <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+            <span>
+              Could not reach the network, so this list may be out of date. Your assets are on chain
+              and unaffected.
+            </span>
+          </div>
+        )}
         {!issuanceEnabled && (
           <div className="flex items-start gap-2 border-b border-caution/30 bg-caution/10 px-4 py-3 text-sm text-caution">
             <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />

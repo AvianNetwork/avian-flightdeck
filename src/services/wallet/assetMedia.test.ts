@@ -206,3 +206,21 @@ describe('the two shapes of REALM metadata', () => {
     expect(media.imageUrl).toBe(`data:image/webp;base64,${art}`);
   });
 });
+
+describe('a refresh that cannot reach the network', () => {
+  /** Electrum that fails the way a dropped connection does. */
+  const failing = {
+    getAssetBalances: async () => {
+      throw new Error('websocket closed');
+    },
+    getAssetMeta: async () => null,
+  };
+
+  it('reports the failure rather than an empty wallet', async () => {
+    // Answering "no assets" for a failed lookup is what made a refresh during a wobble wipe the
+    // list: the caller cannot tell "we could not ask" from "there is nothing".
+    const { getHeldAssets } = await import('./AssetService');
+
+    await expect(getHeldAssets(failing as never, 'RAnyAddress')).rejects.toThrow(/websocket closed/);
+  });
+});
