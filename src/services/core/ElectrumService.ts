@@ -117,6 +117,16 @@ export class ElectrumService {
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 5;
   private reconnectTimeout: NodeJS.Timeout | null = null;
+  /**
+   * Liveness probe.
+   *
+   * `isConnected` is only cleared by `onclose`/`onerror`, and a half-open socket delivers neither:
+   * the peer is gone but no close frame ever arrives — routine on mobile networks, sleeping
+   * machines and NAT timeouts. The app keeps reporting "connected", every request sits until its
+   * own 30s timeout, and refreshes quietly return nothing. A ping that does not come back is the
+   * only way to notice.
+   */
+  private heartbeatInterval: NodeJS.Timeout | null = null;
   // Whether the current server advertises our get_history_rich extension. null = not yet probed;
   // reset whenever the server changes so a switch re-detects.
   private richHistorySupported: boolean | null = null;
@@ -169,6 +179,7 @@ export class ElectrumService {
           this.reconnectAttempts = 0;
           electrumLogger.debug(`Connected to Electrum server: ${url}`);
 
+          this.startHeartbeat();
           resolve();
 
           // Server-side subscriptions die with the socket, so after a reconnect every address
@@ -180,6 +191,7 @@ export class ElectrumService {
         this.websocket.onclose = (event) => {
           this.isConnected = false;
           this.isConnecting = false;
+          this.stopHeartbeat();
           electrumLogger.debug(
             `WebSocket closed: code=${event.code}, reason=${event.reason || 'unknown'}`,
           );
@@ -1008,6 +1020,7 @@ export class ElectrumService {
       this.websocket = null;
     }
 
+    this.stopHeartbeat();
     this.isConnected = false;
     this.isConnecting = false;
     this.failPendingRequests('Disconnected from Electrum server');
@@ -1015,6 +1028,64 @@ export class ElectrumService {
     this.reconnectAttempts = 0;
 
     electrumLogger.debug('Disconnect complete');
+  }
+
+  /** How often to prove the socket is alive, and how long to wait for the proof. */
+  private static readonly HEARTBEAT_INTERVAL_MS = 30_000;
+  private static readonly HEARTBEAT_TIMEOUT_MS = 10_000;
+
+  /**
+   * Probe the connection until it goes away.
+   *
+   * The timeout is deliberately shorter than a request's: the point is to notice a dead socket
+   * before a user's refresh has spent 30 seconds discovering it for itself.
+   */
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatInterval = setInterval(() => {
+      void this.checkAlive();
+    }, ElectrumService.HEARTBEAT_INTERVAL_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+  }
+
+  private async checkAlive(): Promise<void> {
+    if (!this.isConnected || !this.websocket) return;
+
+    try {
+      await Promise.race([
+        this.makeRequest('server.ping', []),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error('ping timeout')),
+            ElectrumService.HEARTBEAT_TIMEOUT_MS,
+          ),
+        ),
+      ]);
+    } catch (error) {
+      electrumLogger.warn('Electrum server stopped answering; treating the connection as dead', error);
+      this.stopHeartbeat();
+      this.isConnected = false;
+      this.failPendingRequests('Connection stopped responding');
+      // close() normally fires onclose, which schedules the reconnect and counts the attempt.
+      try {
+        this.websocket?.close(4000, 'Heartbeat failed');
+      } catch {
+        /* already gone */
+      }
+      // A truly half-open socket may never deliver that event, so make sure a reconnect is
+      // scheduled either way — without double-counting the attempt when onclose did fire.
+      setTimeout(() => {
+        if (!this.isConnected && !this.reconnectTimeout) {
+          this.attemptReconnect();
+        }
+      }, 1000);
+    }
   }
 
   isConnectedToServer(): boolean {
