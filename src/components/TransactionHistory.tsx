@@ -206,18 +206,42 @@ interface TransactionHistoryProps {
 }
 
 export function TransactionHistory({ className }: TransactionHistoryProps) {
-  const { address, refreshTransactionHistory, processingProgress } = useWallet();
+  const { address, electrum, refreshTransactionHistory, processingProgress } = useWallet();
+  /**
+   * Chain tip, for working out confirmations at render time.
+   *
+   * A transaction's stored `confirmations` is a snapshot taken when it was written, so it stays at
+   * whatever it was — "1/6" on a transaction eighty blocks deep — unless a sync happens to rewrite
+   * that row. The block height is already stored, so the live count is just arithmetic against the
+   * current tip, and cannot go stale.
+   */
+  const [chainTip, setChainTip] = useState<number | null>(null);
   const [transactions, setTransactions] = useState<EnhancedTransactionData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [filter, setFilter] = useState<'all' | 'send' | 'receive'>('all');
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(20); // Show 20 transactions per page    // Function to refresh transaction history with progress updates
+  /** Read the chain tip, quietly: a failure just leaves confirmations on their stored value. */
+  const refreshChainTip = useCallback(async () => {
+    if (!electrum?.isConnectedToServer()) return;
+    try {
+      const height = await electrum.getCurrentBlockHeight();
+      if (height > 0) setChainTip(height);
+    } catch {
+      /* leave the last known tip in place */
+    }
+  }, [electrum]);
+
   const refreshTransactionHistoryWithProgress = useCallback(async () => {
     if (!address) return;
 
     try {
       setIsRefreshing(true);
+
+      // The tip first: even when the sync brings back nothing new, every confirmation count on
+      // screen still moves, which is the usual reason to press Refresh.
+      await refreshChainTip();
 
       // Incremental refresh: pull only new transactions rather than re-fetching the entire
       // history. A full re-sync (reclassify everything) is still available via the balance
@@ -238,10 +262,12 @@ export function TransactionHistory({ className }: TransactionHistoryProps) {
     } finally {
       setIsRefreshing(false);
     }
-  }, [address, refreshTransactionHistory]);
+  }, [address, refreshTransactionHistory, refreshChainTip]);
 
   const loadTransactions = useCallback(async () => {
     if (!address) return;
+
+    void refreshChainTip();
 
     try {
       setIsLoading(true);
@@ -279,7 +305,7 @@ export function TransactionHistory({ className }: TransactionHistoryProps) {
     } catch (error) {
       setIsLoading(false);
     }
-  }, [address, refreshTransactionHistory]);
+  }, [address, refreshTransactionHistory, refreshChainTip]);
 
   useEffect(() => {
     const loadTransactionsEffect = async () => {
@@ -387,6 +413,12 @@ export function TransactionHistory({ className }: TransactionHistoryProps) {
 
     return txDate.toLocaleDateString();
   };
+
+  /** Confirmations now, not when the row was stored. Falls back for anything unconfirmed. */
+  const confirmationsOf = (tx: { blockHeight?: number; confirmations?: number }) =>
+    chainTip && tx.blockHeight && tx.blockHeight > 0
+      ? Math.max(0, chainTip - tx.blockHeight + 1)
+      : (tx.confirmations ?? 0);
 
   const getStatusIcon = (confirmations: number | undefined) => {
     const numConfirmations = Number(confirmations) || 0;
@@ -549,9 +581,9 @@ export function TransactionHistory({ className }: TransactionHistoryProps) {
                           <span className="font-medium text-foreground capitalize">
                             {tx.type}
                           </span>
-                          {getStatusIcon(tx.confirmations)}
+                          {getStatusIcon(confirmationsOf(tx))}
                           <span className="text-sm text-muted-foreground">
-                            {getStatusText(tx.confirmations)}
+                            {getStatusText(confirmationsOf(tx))}
                           </span>
                         </div>
 
